@@ -1,0 +1,326 @@
+---
+title: "criteria"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+# 1. SETUP
+
+## 1.1 Load libraries and data
+```{r include=FALSE}
+
+library(dplyr)
+library(ggplot2)
+library(survival)
+library(wesanderson)
+library(survminer)
+
+pal <- wes_palette("Zissou1", 3, type= "continuous")
+
+```
+
+#############################
+### CU -> CI
+#############################
+
+## KM Curves
+```{r}
+
+kmDf <- mrg
+kmTteCu = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+kmDf <- kmDf %>% filter(DX.bl == "CN" | DX.bl == "SMC")
+kmDf <- kmDf %>% filter(Nia11CogLabel == "cu")
+kmDf$Event_PH <- kmTteCu$Event_PH[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Time_PH_exact <- kmTteCu$Time_PH_exact[match(kmDf$RID,kmTteCu$RID)]
+kmDf = kmDf %>% filter(!is.na(Event_PH))
+
+# 2011 NIA-AA
+svg("KM_Nia11.svg")
+kmDf1 <- kmDf %>% filter(Nia11FinalLabel == "not_AD" | Nia11FinalLabel == "not_AD_at_risk")
+survNia11 <- survfit(Surv(Time_PH_exact, Event_PH) ~ Nia11FinalLabel, data = kmDf1)
+kmPlotNia11 <- ggsurvplot(survNia11,data= kmDf1, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotNia11
+dev.off()
+
+# 2016 IWG-2
+svg("KM_Iwg16.svg")
+kmDf2 <- kmDf %>% filter(Iwg16FinalLabel == "not_AD" | Iwg16FinalLabel == "not_AD_at_risk")
+survIwg16 <- survfit(Surv(Time_PH_exact, Event_PH) ~ Iwg16FinalLabel, data = kmDf2)
+kmPlotIwg16 <- ggsurvplot(survIwg16,data= kmDf2, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotIwg16
+dev.off()
+
+# 2018 NIA-AA
+svg("KM_Nia18.svg")
+kmDf3 <- kmDf %>% filter(Nia18FinalLabel == "not_AD" | Nia18FinalLabel == "not_AD_at_risk")
+survNia18 <- survfit(Surv(Time_PH_exact, Event_PH) ~ Nia18FinalLabel, data = kmDf3)
+kmPlotNia18 <- ggsurvplot(survNia18,data= kmDf3, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotNia18
+dev.off()
+
+# 2021 IWG-3
+svg("KM_Iwg21.svg")
+kmDf4 <- kmDf %>% filter(Iwg21FinalLabel == "not_AD" | Iwg21FinalLabel == "not_AD_at_risk")
+survIwg21 <- survfit(Surv(Time_PH_exact, Event_PH) ~ Iwg21FinalLabel, data = kmDf4)
+kmPlotIwg21 <- ggsurvplot(survIwg21,data= kmDf4, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotIwg21
+dev.off()
+
+
+```
+
+# COX PH models
+```{r}
+
+kmDf <- mrg
+kmTteCu = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+kmDf <- kmDf %>% filter(DX.bl == "CN")
+kmDf <- kmDf %>% filter(Nia11CogLabel == "cu")
+kmDf$Event_PH <- kmTteCu$Event_PH[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Time_PH_exact <- kmTteCu$Time_PH_exact[match(kmDf$RID,kmTteCu$RID)]
+kmDf = kmDf %>% filter(!is.na(Event_PH))
+
+coxDfNia11 <- mrg
+coxTteCuNia11 = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+coxDfNia11 <- coxDfNia11 %>% filter(DX.bl == "CN")
+kmDf <- kmDf %>% filter(Nia11CogLabel == "cu")
+coxDfNia11 <- merge(coxDfNia11, coxTteCuNia11[c("RID", "Event_PH", "Time_PH_exact")], by = "RID")
+cox_modelNia11 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Nia11FinalLabel, data = coxDfNia11)
+cox_summaryNia11 <- summary(cox_modelNia11)
+cox_summaryNia11
+concordance(cox_modelNia11)
+
+coxDfIwg16 <- mrg
+coxTteCuIwg16 = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+coxDfIwg16 <- coxDfIwg16 %>% filter(DX.bl == "CN")
+coxDfIwg16 <- merge(coxDfIwg16, coxTteCuIwg16[c("RID", "Event_PH", "Time_PH_exact")], by = "RID")
+cox_modelIwg16 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Iwg16FinalLabel, data = coxDfIwg16)
+cox_summaryIwg16 <- summary(cox_modelIwg16)
+cox_summaryIwg16
+concordance(cox_modelIwg16)
+
+coxDfNia18 <- mrg
+coxTteCuNia18 = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+coxDfNia18 <- coxDfNia18 %>% filter(DX.bl == "CN")
+kmDf <- kmDf %>% filter(Nia11CogLabel == "cu")
+coxDfNia18 <- coxDfNia18 %>% filter(Nia18FinalLabel == "not_AD" | Nia18FinalLabel == "not_AD_at_risk")
+coxDfNia18 <- merge(coxDfNia18, coxTteCuNia18[c("RID", "Event_PH", "Time_PH_exact")], by = "RID")
+cox_modelNia18 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Nia18FinalLabel, data = coxDfNia18)
+cox_summaryNia18 <- summary(cox_modelNia18)
+cox_summaryNia18
+concordance(cox_modelNia18)
+
+coxDfIwg21 <- mrg
+coxTteCuIwg21 = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+coxDfIwg21 <- coxDfIwg21 %>% filter(DX.bl == "CN")
+kmDf <- kmDf %>% filter(Nia11CogLabel == "cu")
+coxDfIwg21 <- merge(coxDfIwg21, coxTteCuIwg21[c("RID", "Event_PH", "Time_PH_exact")], by = "RID")
+cox_modelIwg21 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Iwg21FinalLabel, data = coxDfIwg21)
+cox_summaryIwg21 <- summary(cox_modelIwg21)
+cox_summaryIwg21
+concordance(cox_modelIwg21)
+
+```
+
+# Aditional subanalysis for IWG 2021 risk groups
+```{r}
+
+svg("KM_Iwg21_sub.svg")
+kmDf <- mrg
+kmTteCu = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+kmDf <- kmDf %>% filter(DX.bl == "CN")
+kmDf <- kmDf %>% filter(Nia11CogLabel == "cu")
+kmDf$Event_PH <- kmTteCu$Event_PH[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Time_PH_exact <- kmTteCu$Time_PH_exact[match(kmDf$RID,kmTteCu$RID)]
+kmDf = kmDf %>% filter(!is.na(Event_PH))
+
+kmDf4Sub <- kmDf %>% filter(Iwg21FinalLabel == "not_AD" | Iwg21FinalLabel == "not_AD_at_risk")
+
+survIwg21Sub <- survfit(Surv(Time_PH_exact, Event_PH) ~ Iwg21Final, data = kmDf4Sub)
+kmPlotIwg21Sub <- ggsurvplot(survIwg21Sub,data= kmDf4Sub, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table= T)
+kmPlotIwg21Sub
+dev.off()
+
+coxDfIwg21Sub <- mrg
+coxTteCuIwg21Sub = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+coxDfIwg21Sub <- coxDfIwg21Sub %>% filter(DX.bl == "CN")
+coxDfIwg21Sub <- merge(coxDfIwg21Sub, coxTteCuIwg21Sub[c("RID", "Event_PH", "Time_PH_exact")], by = "RID")
+coxDfIwg21Sub$Iwg21Final = relevel(factor(coxDfIwg21Sub$Iwg21Final), ref = "No clinical syndrome, no positive biomarkers")
+cox_modelIwg21Sub <- coxph(Surv(Time_PH_exact, Event_PH) ~ Iwg21Final, data = coxDfIwg21Sub)
+cox_summaryIwg21Sub <- summary(cox_modelIwg21Sub)
+cox_summaryIwg21Sub
+
+```
+
+
+
+#############################
+### CU/MCI -> DEMENTIA
+#############################
+
+## KM Curves
+```{r}
+
+kmDf <- mrg
+kmTteCu = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+kmTteMci = read.csv("df_tte_mci.csv", stringsAsFactors = FALSE)
+kmDf <- kmDf %>% filter(DX.bl != "AD")
+kmDf$Event_PH <- kmTteCu$Event_PH[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Event_PH <- kmTteMci$Event_PH[match(kmDf$RID,kmTteMci$RID)]
+kmDf$Time_PH_exact <- kmTteCu$Time_PH_exact[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Time_PH_exact <- kmTteMci$Time_PH_exact[match(kmDf$RID,kmTteMci$RID)]
+kmDf = kmDf %>% filter(!is.na(Event_PH))
+
+# 2011 NIA-AA
+svg("KM_dem_Nia11.svg")
+kmDf1 <- kmDf %>% filter(Nia11FinalLabel == "not_AD" | Nia11FinalLabel == "not_AD_at_risk")
+survNia11 <- survfit(Surv(Time_PH_exact, Event_PH) ~ Nia11FinalLabel, data = kmDf1)
+kmPlotNia11 <- ggsurvplot(survNia11,data= kmDf1, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotNia11
+dev.off()
+
+# 2016 IWG-2
+svg("KM_dem_Iwg16.svg")
+kmDf2 <- kmDf %>% filter(Iwg16FinalLabel == "not_AD" | Iwg16FinalLabel == "not_AD_at_risk")
+kmDf2 <- kmDf2 %>% filter(Iwg16CogLabel == "cu")
+survIwg16 <- survfit(Surv(Time_PH_exact, Event_PH) ~
+                        Iwg16FinalLabel, data = kmDf2)
+pal <- wes_palette("Zissou1", 3, type= "continuous")
+kmPlotIwg16 <- ggsurvplot(survIwg16,data= kmDf2, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotIwg16
+dev.off()
+
+# 2018 NIA-AA
+svg("KM_dem_Nia18.svg")
+kmDf3 <- kmDf %>% filter(Nia18FinalLabel == "not_AD" | Nia18FinalLabel == "not_AD_at_risk")
+kmDf3 <- kmDf3 %>% filter(Nia18CogLabel == "cu")
+survNia18 <- survfit(Surv(Time_PH_exact, Event_PH) ~
+                        Nia18FinalLabel, data = kmDf3)
+pal <- wes_palette("Zissou1", 3, type= "continuous")
+kmPlotNia18 <- ggsurvplot(survNia18,data= kmDf3, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotNia18
+dev.off()
+
+# 2021 IWG-3
+svg("KM_dem_Iwg21.svg")
+kmDf4 <- kmDf %>% filter(Iwg21FinalLabel == "not_AD" | Iwg21FinalLabel == "not_AD_at_risk")
+kmDf4 <- kmDf4 %>% filter(Iwg21CogLabel == "cu")
+survIwg21 <- survfit(Surv(Time_PH_exact, Event_PH) ~
+                        Iwg21FinalLabel, data = kmDf4)
+pal <- wes_palette("Zissou1", 3, type= "continuous")
+kmPlotIwg21 <- ggsurvplot(survIwg21,data= kmDf4, alpha= .7, ylim= c(0,1),
+                          linetype = , size= 0.65,
+                          conf.int= T, pval= T, pval.method= T,
+                          conf.int.style= "ribbon", conf.int.alpha= 0.15,
+                          legend.title= "", censor= F,
+                          title= NULL, xlab= "Years since baseline", font.x= c(10),
+                          ylab= "% clinically stable", font.y= c(10),
+                          font.tickslab = c(10), ggtheme= theme_classic(base_family = "Helvetica"),
+                          surv.geom= geom_step, risk.table=T)
+kmPlotIwg21
+dev.off()
+
+```
+
+# COX PH models
+```{r}
+
+kmDf <- mrg
+kmTteCu = read.csv("df_tte_cu.csv", stringsAsFactors = FALSE)
+kmTteMci = read.csv("df_tte_mci.csv", stringsAsFactors = FALSE)
+kmDf <- kmDf %>% filter(DX.bl != "AD")
+kmDf$Event_PH <- kmTteCu$Event_PH[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Event_PH <- kmTteMci$Event_PH[match(kmDf$RID,kmTteMci$RID)]
+kmDf$Time_PH_exact <- kmTteCu$Time_PH_exact[match(kmDf$RID,kmTteCu$RID)]
+kmDf$Time_PH_exact <- kmTteMci$Time_PH_exact[match(kmDf$RID,kmTteMci$RID)]
+kmDf = kmDf %>% filter(!is.na(Event_PH))
+
+kmDf1 <- kmDf %>% filter(Nia11FinalLabel == "not_AD" | Nia11FinalLabel == "not_AD_at_risk")
+cox_modelNia11 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Nia11FinalLabel, data = kmDf1)
+cox_summaryNia11 <- summary(cox_modelNia11)
+cox_summaryNia11
+concordance(cox_modelNia11)
+
+kmDf2 <- kmDf2 %>% filter(Iwg16FinalLabel == "not_AD" | Iwg16FinalLabel == "not_AD_at_risk")
+cox_modelIwg16 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Iwg16FinalLabel, data = kmDf2)
+cox_summaryIwg16 <- summary(cox_modelIwg16)
+cox_summaryIwg16
+concordance(cox_modelIwg16)
+
+kmDf3 <- kmDf3 %>% filter(Nia18FinalLabel == "not_AD" | Nia18FinalLabel == "not_AD_at_risk")
+cox_modelNia18 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Nia18FinalLabel, data = kmDf3)
+cox_summaryNia18 <- summary(cox_modelNia18)
+cox_summaryNia18
+concordance(cox_modelNia18)
+
+kmDf4 <- kmDf4 %>% filter(Iwg21FinalLabel == "not_AD" | Iwg21FinalLabel == "not_AD_at_risk")
+cox_modelIwg21 <- coxph(Surv(Time_PH_exact, Event_PH) ~ Iwg21FinalLabel, data = kmDf4)
+cox_summaryIwg21 <- summary(cox_modelIwg21)
+cox_summaryIwg21
+concordance(cox_modelIwg21)
+
+```

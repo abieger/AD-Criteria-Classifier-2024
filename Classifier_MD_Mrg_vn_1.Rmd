@@ -1,0 +1,1729 @@
+---
+title: "Classifier MD"
+author: "Andrei Bieger & Wagner S. Brum"
+date: "30/05/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: inline
+---
+
+#############################################
+# 1. Setup data
+#############################################
+
+## 1.1 Load libraries and data
+```{r}
+
+library(dplyr)
+library(ggplot2)
+library(ADNIMERGE)
+library(fuzzyjoin)
+library(networkD3)
+library(tidyr)
+library(htmlwidgets)
+library(tableone)
+library(Hmisc)
+library(Gmisc)
+library(shiny)
+library(circlize)
+library(grDevices)
+library(colorRamps)
+library(RColorBrewer)
+library(colorspace)
+library(ComplexHeatmap)
+library(gridExtra)
+library(ggpubr)
+library(FactoMineR)
+library(data.table)
+
+labels <- read.csv("./input2_labels_v3.csv", header=TRUE, stringsAsFactors=FALSE)
+tabMoans_30min <- read.csv("./input3_moans_30min_v1.csv", header=TRUE, stringsAsFactors=FALSE)
+tabMoans_recog <- read.csv("./input3_moans_recog_v1.csv", header=TRUE, stringsAsFactors=FALSE)
+gaitAnalysis <- read.csv("./input4_gait_v1.csv", header=TRUE, stringsAsFactors=FALSE)
+data("adnimerge")
+mrg <- adnimerge
+mrg = mrg %>% filter(Month == 0)
+
+```
+
+## 1.2 Data merging and transformation
+```{r}
+
+### 1.2.1 Standardizing variables
+mrg$xORIGPROT <- ifelse(mrg$ORIGPROT == "ADNI1", 1, 2)
+mrg$SEX_num <- as.numeric(ifelse(mrg$PTGENDER == "Male",1,2))
+mrg$SEX_num2 <- as.numeric(ifelse(mrg$PTGENDER == "Male",1,0))
+
+### 1.2.2 Elecsys
+mrg$ABETA = gsub(">1700", "1700", mrg$ABETA)
+mrg$ABETA = gsub("<200", "200", mrg$ABETA)
+mrg$ABETA = as.numeric(mrg$ABETA)
+mrg$PTAU = gsub(">120", "120", mrg$PTAU)
+mrg$PTAU = gsub("<8", "8", mrg$PTAU)
+mrg$PTAU = as.numeric(mrg$PTAU)
+mrg$TAU = gsub(">1300", "1300", mrg$TAU)
+mrg$TAU = gsub("<80", "80", mrg$TAU)
+mrg$TAU = as.numeric(mrg$TAU)
+mrg = mrg %>% filter(!is.na(ABETA))
+
+### 1.2.3 Hippocampal volume, corrected by intracranial volume
+corrMod <- lm(Hippocampus ~ ICV, mrg)
+betaMod <- summary(corrMod)$coefficients[2,1]
+meanMod <- mean(mrg$ICV, na.rm=TRUE)
+mrg$HVa <- with(mrg,Hippocampus - betaMod*(ICV - meanMod))
+hvaMissing <- ucsffsx %>% filter(VISCODE == "sc")
+hvaMissing <- hvaMissing %>% select(RID,ST29SV,ST88SV)
+hvaMissing2 <- ucsffsx51 %>% filter(VISCODE == "scmri")
+hvaMissing2 <- hvaMissing2 %>% select(RID,ST29SV,ST88SV)
+hvaMissing3 <- ucsffsx51 %>% filter(VISCODE == "m03")
+hvaMissing2 <- merge(hvaMissing,hvaMissing2, all= TRUE)
+mrg$HVa <- ifelse(is.na(mrg$HVa),hvaMissing2$ST29SV[match(mrg$RID,hvaMissing2$RID)]+hvaMissing2$ST88SV[match(mrg$RID,hvaMissing2$RID)],mrg$HVa)
+mrg$HVa <- ifelse(is.na(mrg$HVa),hvaMissing3$ST29SV[match(mrg$RID,hvaMissing3$RID)]+hvaMissing3$ST88SV[match(mrg$RID,hvaMissing3$RID)],mrg$HVa)
+
+### 1.2.4 Neurobat
+data("neurobat")
+neurobat_m12 = neurobat %>% filter(VISCODE == "m12")
+neurobat_m06 = neurobat %>% filter(VISCODE == "m06")
+neurobat_sc = neurobat %>% filter(VISCODE == "sc")
+neurobat = neurobat %>% filter(VISCODE == "bl")
+mrg$AVDEL30MIN = neurobat$AVDEL30MIN[match(mrg$RID, neurobat$RID)]
+mrg$AVDELTOT = neurobat$AVDELTOT[match(mrg$RID, neurobat$RID)]
+mrg$BNTSPONT = neurobat$BNTSPONT[match(mrg$RID, neurobat$RID)]
+mrg$BNTSPONT = ifelse(is.na(mrg$BNTSPONT), neurobat_m06$BNTSPONT[match(mrg$RID, neurobat_m06$RID)], mrg$BNTSPONT)
+mrg$CATANIMSC = neurobat$CATANIMSC[match(mrg$RID, neurobat$RID)]
+mrg$LIMMTOTAL = neurobat_sc$LIMMTOTAL[match(mrg$RID, neurobat_sc$RID)]
+mrg$LDELTOTAL = neurobat_sc$LDELTOTAL[match(mrg$RID, neurobat_sc$RID)]
+mrg$TRABSCOR = neurobat$TRABSCOR[match(mrg$RID, neurobat$RID)]
+mrg$TRABSCOR = ifelse(is.na(mrg$TRABSCOR), neurobat_m06$TRABSCOR[match(mrg$RID, neurobat_m06$RID)], mrg$TRABSCOR)
+mrg$TRABSCOR = ifelse(is.na(mrg$TRABSCOR), neurobat_m12$TRABSCOR[match(mrg$RID, neurobat_m12$RID)], mrg$TRABSCOR)
+mrg$CLOCKSCOR = neurobat$CLOCKSCOR[match(mrg$RID, neurobat$RID)]
+
+### 1.2.6 ADAS 
+data("adas")
+adas = adas %>% filter(VISCODE == "bl")
+mrg$Q3 = adas$Q3SCORE[match(mrg$RID, adas$RID)]
+
+### 1.2.7 NPI
+data("npiq")
+data("npi")
+npi = npi %>% filter(!is.na(NPIB) & VISCODE == "bl" | VISCODE == "m0")
+npiq = npiq %>% filter(!is.na(NPIB) & VISCODE == "bl" | VISCODE == "m0")
+mrg$NPIB = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIB[match(mrg$RID,npi$RID)], npiq$NPIB[match(mrg$RID, npiq$RID)])
+mrg$NPIB = ifelse(mrg$NPIB == "Yes", 1, ifelse(mrg$NPIB == "No",0, 2))
+mrg$NPIBSEV = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIB8B[match(mrg$RID, npi$RID)], npiq$NPIBSEV[match(mrg$RID, npiq$RID)])
+mrg$NPIBSEV = substr(mrg$NPIBSEV, start = 1, stop = 1)
+mrg$NPIBSEV = ifelse(is.na(mrg$NPIBSEV),0,mrg$NPIBSEV)
+mrg$NPIC = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIC[match(mrg$RID, npi$RID)], npiq$NPIC[match(mrg$RID, npiq$RID)])
+mrg$NPICSEV = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIC9B[match(mrg$RID, npi$RID)], npiq$NPICSEV[match(mrg$RID, npiq$RID)])
+mrg$NPICSEV = substr(mrg$NPICSEV, start = 1, stop = 1)
+mrg$NPICSEV = ifelse(is.na(mrg$NPIBSEV),0,mrg$NPIBSEV)
+mrg$NPIG = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIG[match(mrg$RID, npi$RID)], npiq$NPIG[match(mrg$RID, npiq$RID)])
+mrg$NPIGSEV = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIG9B[match(mrg$RID, npi$RID)], npiq$NPIGSEV[match(mrg$RID, npiq$RID)])
+mrg$NPIGSEV = substr(mrg$NPIGSEV, start = 1, stop = 1)
+mrg$NPIGSEV = ifelse(is.na(mrg$NPIBSEV),0,mrg$NPIBSEV)
+mrg$NPIH = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIH[match(mrg$RID, npi$RID)], npiq$NPIH[match(mrg$RID, npiq$RID)])
+mrg$NPIHSEV = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIH8B[match(mrg$RID, npi$RID)], npiq$NPIHSEV[match(mrg$RID, npiq$RID)])
+mrg$NPIHSEV = substr(mrg$NPIHSEV, start = 1, stop = 1)
+mrg$NPIHSEV = ifelse(is.na(mrg$NPIBSEV),0,mrg$NPIBSEV)
+mrg$NPIJ = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIJ[match(mrg$RID, npi$RID)], npiq$NPIJ[match(mrg$RID, npiq$RID)])
+mrg$NPIJSEV = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIJ8B[match(mrg$RID, npi$RID)], npiq$NPIJSEV[match(mrg$RID, npiq$RID)])
+mrg$NPIJSEV = substr(mrg$NPIJSEV, start = 1, stop = 1)
+mrg$NPIJSEV = ifelse(is.na(mrg$NPIBSEV),0,mrg$NPIBSEV)
+mrg$NPIL = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIL[match(mrg$RID, npi$RID)], npiq$NPIL[match(mrg$RID, npiq$RID)])
+mrg$NPILSEV = ifelse(mrg$ORIGPROT == "ADNI2", npi$NPIL9B[match(mrg$RID, npi$RID)], npiq$NPILSEV[match(mrg$RID, npiq$RID)])
+mrg$NPILSEV = substr(mrg$NPILSEV, start = 1, stop = 1)
+mrg$NPILSEV = ifelse(is.na(mrg$NPIBSEV),0,mrg$NPIBSEV)
+
+### 1.2.8 NEUROEXM
+data("neuroexm")
+neuroexm = neuroexm %>% filter(VISCODE == "sc")
+mrg$NXGENCOM = neuroexm$NXGENCOM[match(mrg$RID, neuroexm$RID)]
+
+### 1.2.9 CLIELG
+data("clielg")
+clielgDf = clielg %>% filter(VISCODE == "scmri")
+mrg$CEMRI = clielgDf$CEMRI[match(mrg$RID, clielgDf$RID)]
+clielgDf = clielg %>% filter(VISCODE == "sc")
+mrg$FAILEXCLU = clielgDf$FAILEXCLU[match(mrg$RID, clielgDf$RID)]
+mrg$FAILEXCLU = substr(mrg$FAILEXCLU, start = 1, stop = 2)
+mrg$FAILEXCLU = ifelse(mrg$FAILEXCLU == "8.", 8, mrg$FAILEXCLU)
+mrg$FAILEXCLU = ifelse((is.na(mrg$FAILEXCLU) | (mrg$FAILEXCLU == "")), 0, mrg$FAILEXCLU)
+mrg$FAILINCLU = clielgDf$FAILINCLU[match(mrg$RID, clielgDf$RID)]
+mrg$FAILINCLU = substr(mrg$FAILINCLU, start = 1, stop = 1)
+mrg$FAILINCLU = ifelse(is.na(mrg$FAILINCLU) | (mrg$FAILINCLU == ""), 0, mrg$FAILINCLU)
+
+### 1.2.10 DXSUM
+data("dxsum")
+dxsum = dxsum %>% filter(VISCODE == "bl" | VISCODE == "sc")
+mrg$DXMOTHET = dxsum$DXMOTHET[match(mrg$RID, dxsum$RID)]
+mrg$DXMOTHET = ifelse(is.na(mrg$DXMOTHET), 0, mrg$DXMOTHET)
+mrg$DXODES = dxsum$DXODES[match(mrg$RID, dxsum$RID)]
+mrg$DXODES = ifelse(is.na(mrg$DXODES), 0, mrg$DXODES)
+mrg$DXPARK = dxsum$DXPARK[match(mrg$RID, dxsum$RID)]
+mrg$DXPARK = ifelse(mrg$DXPARK == "Yes", 1, 0)
+mrg$DXPARK = ifelse(is.na(mrg$DXPARK), 0, mrg$DXPARK)
+
+### 1.2.11 EXCLUSION
+data("exclusio")
+exclusio = exclusio %>% filter(VISCODE == "sc")
+mrg$EXABUSE = exclusio$EXABUSE[match(mrg$RID, exclusio$RID)]
+mrg$EXABUSE = ifelse(mrg$EXABUSE != "Yes", 0, 1)
+mrg$EXABUSE = ifelse(is.na(mrg$EXABUSE), 0, mrg$EXABUSE)
+mrg$EXILLNESS = exclusio$EXILLNESS[match(mrg$RID, exclusio$RID)]
+mrg$EXILLNESS = ifelse(mrg$EXILLNESS != "Yes", 0, 1)
+mrg$EXILLNESS = ifelse(is.na(mrg$EXILLNESS), 0, mrg$EXILLNESS)
+mrg$EXLAB = exclusio$EXLAB[match(mrg$RID, exclusio$RID)]
+mrg$EXLAB = ifelse(mrg$EXLAB != "Yes", 0, 1)
+mrg$EXLAB = ifelse(is.na(mrg$EXLAB), 0, mrg$EXLAB)
+mrg$EXMEDS = exclusio$EXMEDS[match(mrg$RID, exclusio$RID)]
+mrg$EXMEDS = ifelse(mrg$EXMEDS != "Yes", 0, 1)
+mrg$EXMEDS = ifelse(is.na(mrg$EXMEDS), 0, mrg$EXMEDS)
+mrg$EXNEURO = exclusio$EXNEURO[match(mrg$RID, exclusio$RID)]
+mrg$EXNEURO = ifelse(mrg$EXNEURO != "Yes", 0, 1)
+mrg$EXNEURO = ifelse(is.na(mrg$EXNEURO), 0, mrg$EXNEURO)
+mrg$EXNIMAG = exclusio$EXNIMAG[match(mrg$RID, exclusio$RID)]
+mrg$EXNIMAG = ifelse(mrg$EXNIMAG != "Yes", 0, 1)
+mrg$EXNIMAG = ifelse(is.na(mrg$EXNIMAG), 0, mrg$EXNIMAG)
+mrg$EXPSYCH = exclusio$EXPSYCH[match(mrg$RID, exclusio$RID)]
+mrg$EXPSYCH = ifelse(mrg$EXPSYCH != "Yes", 0, 1)
+mrg$EXPSYCH = ifelse(is.na(mrg$EXPSYCH), 0, mrg$EXPSYCH)
+
+### 1.2.12 INCLUSION
+data("inclusio")
+inclusio = inclusio %>% filter(VISCODE == "sc")
+mrg$INCMCOMP = inclusio$INCMCOMP[match(mrg$RID, inclusio$RID)]
+mrg$INCMCOMP = ifelse(((mrg$xORIGPROT == 1) & (mrg$INCMCOMP == "Yes")), 1, ifelse(((mrg$xORIGPROT == 2) & (is.na(mrg$INCMCOMP))), 0, NA))
+
+### 1.2.13 GDS
+data("gdscale")
+gdscale = gdscale %>% filter(VISCODE == "sc")
+mrg$GDTOTAL = gdscale$GDTOTAL[match(mrg$RID, gdscale$RID)]
+
+### 1.2.14 HACHINSKI
+data("modhach")
+modhach = modhach %>% filter(VISCODE == "sc")
+mrg$HMNEURSG = modhach$HMNEURSG[match(mrg$RID, modhach$RID)]
+mrg$HMNEURSG = ifelse(mrg$HMNEURSG == "Absent", 0, 2)
+mrg$HMNEURSM = modhach$HMNEURSM[match(mrg$RID, modhach$RID)]
+mrg$HMNEURSM = ifelse(mrg$HMNEURSM == "Absent", 0, 2)
+mrg$HMONSET = modhach$HMONSET[match(mrg$RID, modhach$RID)]
+mrg$HMONSET = ifelse(mrg$HMONSET == "Absent", 0, 2)
+mrg$HMSTROKE = modhach$HMSTROKE[match(mrg$RID, modhach$RID)]
+mrg$HMSTROKE = ifelse(mrg$HMSTROKE == "Absent", 0, 2)
+mrg$HMSCORE = modhach$HMSCORE[match(mrg$RID, modhach$RID)]
+
+### 1.2.15 MRI INFARCTS
+mri_infarcts = mri_infarcts %>% filter(VISCODE == "sc" | VISCODE == "scmri")
+mrg$BrainInfarcts <- mri_infarcts$SIZE[match(mrg$RID,mri_infarcts$RID)]
+mrg$BrainInfarcts <- ifelse(is.na(mrg$BrainInfarcts),0,mrg$BrainInfarcts)
+mrg$BrainInfarcts <- ifelse(mrg$BrainInfarcts == "LARGE",1,0)
+
+### 1.2.16 Gait analysis
+mrg$GAIT2 = gaitAnalysis$GAIT2[match(mrg$RID, gaitAnalysis$RID)]
+mrg$xGAIT <- ifelse(mrg$GAIT2 == 3,1,0)
+
+### 1.2.17 Normalizing AVLT scores to MOANS
+moanScores30min <- fuzzy_left_join(mrg, tabMoans_30min, by = c("AVDEL30MIN", "AGE" = "age_start", "AGE" = "age_end"), match_fun = list(`==`, `>=`, `<=`)) %>%
+  dplyr::select(AGE, AVDEL30MIN = AVDEL30MIN.x, moans_30min)
+moanScoresRecog <- fuzzy_left_join(mrg, tabMoans_recog, by = c("AVDELTOT", "AGE" = "age_start", "AGE" = "age_end"), match_fun = list(`==`, `>=`, `<=`)) %>%
+    dplyr::select(AGE, AVDELTOT = AVDELTOT.x, moans_recognition)
+mrg$AVDEL30MIN_moans <- moanScores30min$moans_30min
+mrg$AVDELTOT_moans <- moanScoresRecog$moans_recognition
+
+## 1.2.18 Generate standardized test scores
+mrg$CATANIMSC_z <- (mrg$CATANIMSC - (20.65774665 + (0.00454905*mrg$SEX_num) + (-0.12844788*mrg$AGE) + (0.56508779*mrg$PTEDUCAT))) / 5.210138
+mrg$BNTSPONT_z <- (as.numeric(mrg$BNTSPONT) - (25.49287807 + (0.61686473*mrg$SEX_num) + (-0.05142736*mrg$AGE) + (0.33669818*mrg$PTEDUCAT))) / 2.992948
+mrg$TRABSCOR_z <- -1*((mrg$TRABSCOR - (43.216988 + (-2.948423*mrg$SEX_num) + (1.700573*mrg$AGE) + (-4.884626*mrg$PTEDUCAT))) / 44.42661)
+mrg$LIMMTOTAL_z <- (mrg$LIMMTOTAL - (10.2246123 + (-1.2134844*mrg$SEX_num) + (-0.0229675*mrg$AGE) + (0.3713205*mrg$PTEDUCAT))) / 3.727395
+mrg$LDELTOTAL_z <- (mrg$LDELTOTAL - (9.1318338 + (-1.38710825*mrg$SEX_num) + (-0.02623125*mrg$AGE) + (0.40779118*mrg$PTEDUCAT) + (-0.02285031*35))) / 4.058524
+avdel30m_mean <- mean(mrg$AVDEL30MIN_moans, na.rm=TRUE)
+avdel30m_sd <- sd(mrg$AVDEL30MIN_moans, na.rm=TRUE)
+avdeltotm_mean <- mean(mrg$AVDELTOT_moans, na.rm=TRUE)
+avdeltotm_sd <- sd(mrg$AVDELTOT_moans, na.rm=TRUE)
+mrg$AVDEL30MIN_moans_z <- ((mrg$AVDEL30MIN_moans - avdel30m_mean)/ avdel30m_sd)
+mrg$AVDELTOT_moans_z <- ((mrg$AVDELTOT_moans - avdeltotm_mean)/ avdeltotm_sd)
+
+### 1.2.19 Binarizing "Column" to "xColumn"
+mrg$xCATANIMSC_z <- ifelse(mrg$CATANIMSC_z < -1.5,1,0)
+mrg$xBNTSPONT_z <- ifelse(mrg$BNTSPONT_z < -1.5,1,0)
+mrg$xTRABSCOR_z <- ifelse(mrg$TRABSCOR_z < -1.5,1,0)
+mrg$xLIMMTOTAL_z <- ifelse(mrg$LIMMTOTAL_z < -1.5,1,0)
+mrg$xLDELTOTAL_z <- ifelse(mrg$LDELTOTAL_z < -1.5,1,0)
+mrg$xAVDEL30MIN_moans_z <- ifelse(mrg$AVDEL30MIN_moans_z < -1.5,1,0)
+mrg$xAVDELTOT_moans_z <- ifelse(mrg$AVDELTOT_moans_z < -1.5,1,0)
+mrg$xGDTOTAL <- ifelse(mrg$GDTOTAL >= 10,1,0)
+mrg$xCLOCKSCOR <- ifelse(mrg$CLOCKSCOR <= 3,1,0)
+abetaThresh <- 977
+ptauThresh <- 24 
+ttauThresh <- 266
+mrg$xCsfABETA <- ifelse(mrg$ABETA < abetaThresh,1,0)
+mrg$xCsfPTAU <- ifelse(mrg$PTAU > ptauThresh,1,0)
+mrg$xCsfTTAU <- ifelse(mrg$TAU > ttauThresh,1,0)
+mrg$HVa <- ifelse(is.na(mrg$HVa), 100000, mrg$HVa) 
+mrg$xHVa <- ifelse(mrg$HVa > 6723,0,1)
+mrg$FDG <- ifelse(is.na(mrg$FDG), 1000, mrg$FDG) 
+mrg$xFDG <- ifelse(mrg$FDG < 1.21,1,0)
+mrg$PIB <- ifelse(is.na(mrg$PIB), 0.0001, mrg$PIB) 
+mrg$xPIB <- ifelse(mrg$PIB >= 1.45,1,0)
+mrg$AV45 <- ifelse(is.na(mrg$AV45), 0.0001, mrg$AV45) 
+mrg$xAV45 <- ifelse(mrg$AV45 > 1.11,1,0)
+mrg$xFAQ <- ifelse(mrg$FAQ <= 7,0,1)
+mrg = mrg %>% filter(!is.na(xFAQ))
+
+### 1.2.20 Defining cognitive domains based on cognitive tests' z-scores and population data
+mrg$DomainMemory <- ifelse((mrg$xLIMMTOTAL_z + mrg$xLDELTOTAL_z + mrg$xAVDEL30MIN_moans_z + mrg$xAVDELTOT_moans_z) == 0,0,1)
+mrg$DomainExecutive <- ifelse((mrg$xCATANIMSC_z + mrg$xTRABSCOR_z) == 0,0,1)
+mrg$DomainLanguage <- ifelse((mrg$xBNTSPONT_z) == 0,0,1)
+mrg$DomainVisuaospatial <- ifelse(mrg$xCLOCKSCOR == 1,1,0)
+mrg$DomainBehavior <- ifelse(((mrg$NPIHSEV >= 2) | (mrg$NPIGSEV >= 2) | (mrg$NPICSEV >= 2) | (mrg$NPIJSEV >= 2) | (mrg$NPILSEV >= 2)),1,0)
+
+```
+
+#############################################
+# 2. NIA-AA 2011
+#############################################
+
+## 2.1 Cognitive assessment
+```{r}
+
+# C.01 -> Does the subject present a complaint of cognitive decline?
+mrg$AC01CogComplaint <- ifelse((mrg$xORIGPROT == 1),ifelse((mrg$DX == "CN"),ifelse((mrg$INCMCOMP == 0),1,0),ifelse((mrg$INCMCOMP == 0),0,1)),ifelse((mrg$DX == "CN"),ifelse((mrg$FAILINCLU == 0),0,1),ifelse((mrg$FAILINCLU == 0),1,0)))
+
+# C.02 -> Is there objective evidence of decline?
+mrg$AC02ObjEvidenceDecline <- ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1)
+
+# C.03 -> Does the cognitive impairment affect at least two cognitive domains?
+mrg$AC03Domain_atLeastTwo <- ifelse((mrg$DomainMemory + mrg$DomainExecutive + mrg$DomainLanguage + mrg$DomainVisuaospatial + mrg$DomainBehavior  >= 2),1,0)
+
+# C.04 -> Is the cognitive decline mainly of the amnestic type?
+mrg$AC04MainlyAmnestic <- mrg$DomainMemory
+
+# C.05 -> Is the cognitive decline presented as one of the non-amnestic types?
+mrg$AC05NonAmnestic <- ifelse(mrg$DomainExecutive + mrg$DomainLanguage == 0,0,1)
+
+# C.06 -> Did the cognitive decline have an insidious onset?
+mrg$AC06InsidiousOnset <- ifelse((mrg$HMONSET == 0),0,1)
+
+# Cognitive assessment algorithm
+mrg$Nia11CogAs <- ifelse((mrg$AC01CogComplaint == 0),
+                          "No cognitive impairment",
+                          ifelse((mrg$AC02ObjEvidenceDecline == 0),
+                                 "No cognitive impairment",
+                                 ifelse((mrg$AC03Domain_atLeastTwo == 0),
+                                        "One domain cognitive impairment",
+                                         ifelse((mrg$AC04MainlyAmnestic == 0),
+                                                ifelse((mrg$AC05NonAmnestic == 0),
+                                                       "Non-AD cognitive impairment",
+                                                       ifelse((mrg$AC06InsidiousOnset == 0),
+                                                              "Probable AD cognitive impairment",
+                                                              "Possible AD cognitive impairment"
+                                                              )),
+                                                ifelse((mrg$AC06InsidiousOnset == 0),
+                                                       "Probable AD cognitive impairment",
+                                                       "Possible AD cognitive impairment"
+                                                )))))
+```
+
+## 2.2 Functional assessment
+```{r}
+
+# F.01 -> Is the subject's functionality preserved? 
+mrg$AF01Func <- ifelse(mrg$xFAQ == 1,0,1)
+
+# Functional assessment algorithm
+mrg <- mrg %>%
+  mutate(Nia11FunAs = case_when(
+    ((Nia11CogAs == "No cognitive impairment") & (AF01Func == 1)) ~ "No cognitive syndrome, functional",
+    ((Nia11CogAs == "No cognitive impairment") & (AF01Func == 0)) ~ "No cognitive syndrome, not functional",
+    ((Nia11CogAs == "Probable AD cognitive impairment") & (AF01Func == 1)) ~ "MCI cognitive syndrome",
+    ((Nia11CogAs == "Probable AD cognitive impairment") & (AF01Func == 0)) ~ "Probable AD cognitive syndrome",
+    ((Nia11CogAs == "Possible AD cognitive impairment") & (AF01Func == 1)) ~ "MCI cognitive syndrome",
+    ((Nia11CogAs == "Possible AD cognitive impairment") & (AF01Func == 0)) ~ "Possible AD cognitive syndrome",
+    ((Nia11CogAs == "One domain cognitive impairment") & (AF01Func == 1)) ~ "MCI cognitive syndrome",
+    ((Nia11CogAs == "One domain cognitive impairment") & (AF01Func == 0)) ~ "One domain cognitive syndrome, not functional",
+    ((Nia11CogAs == "Non-AD cognitive impairment")) ~ "Non-AD cognitive impairment",
+  ))
+    
+```
+
+## 2.3 Exclusion criteria assessment
+```{r}
+
+# E.01 -> Does the subject present any psychiatric cause that might explain the impairment?
+mrg$AE01PsychCause <- ifelse((mrg$xGDTOTAL == 1),1,ifelse((mrg$xORIGPROT == 1),ifelse((mrg$EXPSYCH == 1),1,0),ifelse((mrg$FAILEXCLU == 4),1,0)))
+
+# E.02 -> Does the subject present prominent features of behavioral variant frontotemporal dementia?
+mrg$AE0.OnlyExecutive <- ifelse((mrg$DomainMemory == 0) & (mrg$DomainLanguage == 0) & (mrg$DomainExecutive > 0), 1, 0)
+mrg$AE02PhenotypeFTD <- ifelse(((mrg$AE0.OnlyExecutive == 1) & (mrg$NPIHSEV >= 2) & (mrg$NPIGSEV >= 2) & (mrg$NPICSEV >= 2) & (mrg$NPIJSEV >= 2) & (mrg$NPILSEV >= 2)),1,0)
+
+# E.03 -> Does the subject present core prominent features of semantic variant or non-fluent variant primary progressive aphasia?
+mrg$AE03OnlyLanguage <- ifelse((mrg$DomainMemory == 0) & (mrg$DomainExecutive == 0) & (mrg$DomainLanguage > 0), 1, 0)
+
+# E.04 ->  Does the subject present another concurrent, active medical condition or medication that could have substantial effect on cognition?
+mrg$AE04OtherCause <- ifelse((mrg$xORIGPROT == 1),
+                          ifelse(((mrg$HMSCORE > 4) | (mrg$EXNIMAG == 1) | (mrg$EXLAB == 1) | (mrg$EXPSYCH == 1) | (mrg$EXABUSE == 1) | (mrg$EXILLNESS == 1) | (mrg$EXNEURO == 1) | (mrg$EXMEDS == 1)),1,0),
+                          ifelse(mrg$HMSCORE <= 4 | mrg$FAILEXCLU == 0,0,1))
+
+# E.05 -> Does the subject present evidence of cerebrovascular disease?
+mrg$AE05VasCause <- ifelse((mrg$HMSCORE > 4) | ifelse((mrg$xORIGPROT == 1),mrg$EXNIMAG == 1,mrg$CEMRI == 1) | mrg$BrainInfarcts == 1,1,0)
+
+# E.06 -> Does the subject present evidence of Lewy Bodies dementia?
+mrg$AE06ParkLBD <- ifelse(((mrg$DXPARK != 1)) & ((mrg$NPIB != 1)),0,1)
+
+# E.07 -> Does the subject present any vascular, traumatic, medical cause of cognitive decline?
+mrg$AE07AnyCause <- ifelse(mrg$xORIGPROT == 1,ifelse(((mrg$EXNIMAG == 1) | (mrg$EXLAB == 1) | (mrg$EXPSYCH == 1) | (mrg$EXABUSE == 1) | (mrg$EXILLNESS == 1) | (mrg$EXNEURO == 1) | (mrg$EXMEDS == 1)),1,0),ifelse(mrg$HMSCORE <= 4 | mrg$FAILEXCLU == 0,0,1))
+
+# Exclusion critria assessment algorithm
+mrg <- mrg %>%
+  mutate(Nia11ExcAs = case_when(
+    ((Nia11FunAs == "Probable AD cognitive syndrome") & (AE01PsychCause == 1)) ~ "Non-AD clinical syndrome",
+    ((Nia11FunAs == "Probable AD cognitive syndrome") & (AE01PsychCause == 0) & ((mrg$AE02PhenotypeFTD == 1) | (mrg$AE03OnlyLanguage == 1) | (mrg$AE04OtherCause == 1) | (mrg$AE05VasCause == 1) | (mrg$AE06ParkLBD == 1))) ~ "Non-AD dementia clinical syndrome",
+    ((Nia11FunAs == "Probable AD cognitive syndrome") & (AE01PsychCause == 0) & (mrg$AE02PhenotypeFTD == 0) & (mrg$AE03OnlyLanguage == 0) & (mrg$AE04OtherCause == 0) & (mrg$AE05VasCause == 0) & (mrg$AE06ParkLBD == 0)) ~ "Probable AD dementia clinical syndrome",
+    ((Nia11FunAs == "Possible AD cognitive syndrome") & (AE01PsychCause == 1)) ~ "Non-AD clinical syndrome",
+    ((Nia11FunAs == "Possible AD cognitive syndrome") & (AE01PsychCause == 0) & ((mrg$AE02PhenotypeFTD == 1) | (mrg$AE03OnlyLanguage == 1) | (mrg$AE04OtherCause == 1) | (mrg$AE05VasCause == 1) | (mrg$AE06ParkLBD == 1))) ~ "Non-AD dementia clinical syndrome",
+    ((Nia11FunAs == "Possible AD cognitive syndrome") & (AE01PsychCause == 0) & (mrg$AE02PhenotypeFTD == 0) & (mrg$AE03OnlyLanguage == 0) & (mrg$AE04OtherCause == 0) & (mrg$AE05VasCause == 0) & (mrg$AE06ParkLBD = 0)) ~ "Possible AD dementia clinical syndrome",
+    ((Nia11FunAs == "MCI cognitive syndrome") & (mrg$AE07AnyCause == 1)) ~ "Non-AD MCI clinical syndrome",
+    ((Nia11FunAs == "MCI cognitive syndrome") & (mrg$AE07AnyCause == 0)) ~ "MCI due to AD clinical syndrome",
+    (Nia11FunAs == "Non-AD cognitive impairment") ~ "Non-AD cognitive impairment",
+    (Nia11FunAs == "No cognitive syndrome, not functional") ~ "No cognitive syndrome, not functional",
+    (Nia11FunAs == "One domain cognitive syndrome, not functional") ~ "One domain cognitive syndrome, not functional",
+    (Nia11FunAs == "No cognitive syndrome, functional") ~ "No clinical syndrome"
+  ))
+
+```
+
+## 2.4 Biomarkers assessment
+```{r}
+
+# B.01 -> Evidence of amyloid pathology
+mrg$AB01Amyloidosis <- ifelse((mrg$xPIB == 0 & mrg$xAV45 == 0 & mrg$xCsfABETA == 0),0,1)
+
+# B.02 -> Evidence of neurodegeneration
+mrg$AB02Neurodeg <- ifelse((mrg$xFDG == 0 & mrg$xHVa == 0 & mrg$xCsfTTAU == 0 & mrg$xCsfPTAU == 0),0,1)
+
+# B.03 -> Evidence of causative genetic mutation (PSEN1, PSEN2, APP)
+mrg$AB03Genetic <- 0 # not included
+
+# Biomarkers assessment algorithm
+mrg <- mrg %>%
+  mutate(Nia11BioAs = case_when(
+    ((Nia11ExcAs == "No clinical syndrome") & (AB01Amyloidosis == 1) & (AB02Neurodeg == 1)) ~ "CU - stage 2/3 preclinical AD",
+    ((Nia11ExcAs == "No clinical syndrome") & (AB01Amyloidosis == 1) & (AB02Neurodeg == 0)) ~ "CU - stage 1 preclinical AD",
+    ((Nia11ExcAs == "No clinical syndrome") & (AB01Amyloidosis == 0) & (AB02Neurodeg == 1)) ~ "CU - suspected non-alzheimer pathology (SNAP)",
+    ((Nia11ExcAs == "No clinical syndrome") & (AB01Amyloidosis == 0) & (AB02Neurodeg == 0)) ~ "CU - no abnormal biomarkers",
+    ((Nia11ExcAs == "Probable AD dementia clinical syndrome") & (AB03Genetic == 1)) ~ "Probable AD dementia in a carrier of a causative AD genetic mutation",
+    ((Nia11ExcAs == "Probable AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 1) & (AB02Neurodeg == 1)) ~ "Probable AD dementia with evidence of AD pathophysiological process",
+    ((Nia11ExcAs == "Probable AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 1) & (AB02Neurodeg == 0)) ~ "Probable AD dementia based on clinical criteria",
+    ((Nia11ExcAs == "Probable AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 0) & (AB02Neurodeg == 1)) ~ "Probable AD dementia based on clinical criteria",
+    ((Nia11ExcAs == "Probable AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 0) & (AB02Neurodeg == 0)) ~ "Dementia unlikely due to AD",
+    ((Nia11ExcAs == "Possible AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 1) & (AB02Neurodeg == 1)) ~ "Possible AD dementia with evidence of AD pathophysiological process",
+    ((Nia11ExcAs == "Possible AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 1) & (AB02Neurodeg == 0)) ~ "Possible AD dementia based on clinical criteria",
+    ((Nia11ExcAs == "Possible AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 0) & (AB02Neurodeg == 1)) ~ "Possible AD dementia based on clinical criteria",
+    ((Nia11ExcAs == "Possible AD dementia clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 0) & (AB02Neurodeg == 0)) ~ "Dementia unlikely due to AD",
+    ((Nia11ExcAs == "MCI due to AD clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 1) & (AB02Neurodeg == 1)) ~ "MCI due to AD - high likelyhood",
+    ((Nia11ExcAs == "MCI due to AD clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 1) & (AB02Neurodeg == 0)) ~ "MCI due to AD - core clinical criteria",
+    ((Nia11ExcAs == "MCI due to AD clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 0) & (AB02Neurodeg == 1)) ~ "MCI due to AD - core clinical criteria",
+    ((Nia11ExcAs == "MCI due to AD clinical syndrome") & (AB03Genetic == 0) & (AB01Amyloidosis == 0) & (AB02Neurodeg == 0)) ~ "MCI unlikely due to AD",
+    (Nia11CogAs == "Non-AD cognitive impairment") ~ "Non-AD cognitive impairment",
+    (Nia11ExcAs == "No cognitive syndrome, not functional") ~ "No cognitive syndrome, not functional",
+    (Nia11ExcAs == "One domain cognitive syndrome, not functional") ~ "One domain cognitive syndrome, not functional",
+    (Nia11ExcAs == "Non-AD clinical syndrome") ~ "Non-AD clinical syndrome",
+    (Nia11ExcAs == "Non-AD dementia clinical syndrome") ~ "Non-AD dementia clinical syndrome",
+    (Nia11ExcAs == "Non-AD MCI clinical syndrome") ~ "Non-AD MCI clinical syndrome",
+  ))
+
+```
+
+
+#############################################
+# 3. IWG-2 2014/2016
+#############################################
+
+## 3.1 Cognitive assessment
+```{r}
+
+# C.01 -> Does the subject present a history and evidence of cognitive decline?
+mrg$BC01CogDecline <- ifelse((mrg$xORIGPROT == 1),ifelse((mrg$DX == "CN"),ifelse((mrg$INCMCOMP == 0),ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1),0),ifelse((mrg$INCMCOMP == 0),0,ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1))),ifelse((mrg$DX == "CN"),ifelse((mrg$FAILINCLU == 0),0,ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1)),ifelse((mrg$FAILINCLU == 0),ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1),0)))
+
+# C.02 -> Is the impairment of the amnestic type?
+mrg$BC02DomainMemory <- ifelse(mrg$DomainMemory == 1,1,0)
+
+# C.03 -> Is the impairment of the posterior type?
+mrg$BC03DomainPost <- ifelse(mrg$Q3 > 2,1,0)
+
+# C.04 -> Is the impairment of the logopenic type?
+mrg$BC04DomainLanguage <- ifelse(mrg$DomainLanguage == 1,1,0)
+
+# C.05 -> Is the impairment of the frontal type?
+mrg$BC05DomainExecutive <- ifelse(mrg$DomainExecutive == 1,1,0)
+
+# C.06 -> Is the impairment of the Down`s syndrome type?
+mrg$BC06DomainDown <- 0 # not included
+
+# Cognitive assessment algorithm
+mrg$Iwg16CogAs <- ifelse((mrg$BC01CogDecline == 0),
+                         "No cognitive impairment",
+                         ifelse(mrg$BC02DomainMemory == 1, 
+                                "Typical AD cognitive impairment", 
+                                ifelse(((mrg$BC03DomainPost == 1) | (mrg$BC04DomainLanguage == 1) | (mrg$BC05DomainExecutive == 1)), 
+                                       "Atypical AD cognitive impairment", 
+                                       "Non-AD cognitive impairment"
+                                )))
+
+```
+
+## 3.2 Functional assessment
+```{r}
+
+# F.01 -> Is the subject`s functionality preserved?
+mrg$BF01Func <- ifelse(mrg$xFAQ == 1,0,1)
+
+# Functional assessment Algorithm
+mrg <- mrg %>%
+  mutate(Iwg16FunAs = case_when(
+    ((Iwg16CogAs == "No cognitive impairment") & (BF01Func == 1)) ~ "No cognitive syndrome, functional",
+    ((Iwg16CogAs == "No cognitive impairment") & (BF01Func == 0)) ~ "No cognitive syndrome, not functional",
+    ((Iwg16CogAs == "Non-AD cognitive impairment")) ~ "Non-AD cognitive impairment",
+    ((Iwg16CogAs == "Typical AD cognitive impairment") & (BF01Func == 0)) ~ "Typical AD cognitive syndrome",
+    ((Iwg16CogAs == "Typical AD cognitive impairment") & (BF01Func == 1)) ~ "Prodromal AD cognitive syndrome",
+    ((Iwg16CogAs == "Atypical AD cognitive impairment") & (BF01Func == 0)) ~ "Atypical AD cognitive syndrome",
+    ((Iwg16CogAs == "Atypical AD cognitive impairment") & (BF01Func == 1)) ~ "Prodromal AD cognitive syndrome",
+  ))
+
+```
+
+## 3.3 Exclusion criteria assessment
+```{r}
+
+# E.01 <- Sudden onset of symptoms?
+mrg$BE01SuddenOnset <- ifelse((mrg$HMONSET == 1),1,0)
+
+# E.02 <- Presence of focal neurological signs or symptoms?
+mrg$BE02FocalFeatures <- ifelse(((mrg$HMNEURSG != 2) & (mrg$HMNEURSM != 2)), 0,1)
+
+# E.03 <- History of cerebrovascular disease?
+mrg$BE03HistVascular <- ifelse(mrg$HMSCORE > 4,1,0)
+
+# E.04 <- FLAIR or T2 consistent with vascular disease?
+mrg$BE04ImgVascular <- ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXNIMAG == 1),1,0), ifelse((mrg$CEMRI == 1)| mrg$BrainInfarcts == 1,1,0))
+
+# E.05 <- Presence of early extrapyramidal signs?
+mrg$BE05ExPyrSigns <- ifelse((mrg$DXPARK == 1),1,0)
+
+# E.06 <- Presence of early hallucinations?
+mrg$BE06Hallucin <- ifelse((mrg$NPIB == 1),1,0)
+
+# E.07 <- Presence of cognitive fluctuations?
+mrg$BE07CogFluc <- 0 # No available data on cognitive fluctuation
+
+# E.08 <- Previous diagnosis of non-AD dementia?
+mrg$BE08PrevDem <- ifelse((mrg$DXODES == 0),0,1)
+
+# E.09 <- Presence of symptoms of major depression?
+mrg$BE09Depression <- ifelse((ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXPSYCH == 1),1,0), ifelse((mrg$FAILEXCLU == 4),1,0)) | (mrg$DXODES == 5) | (mrg$DXMOTHET == "Major Depression") | (mrg$xGDTOTAL == 1)),1,0)
+
+# E.10 <- Early occurence of: gait disturbances, seizures, major and prevalent behavioral changes?
+mrg$xNXGENCOM <- ifelse(grepl("seizure", mrg$NXGENCOM),1,0)
+mrg$BE10GaitSeizBehav <- ifelse(((mrg$xGAIT == 1) | (mrg$xNXGENCOM == 1) | ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXPSYCH == 1),1,0), ifelse((mrg$FAILEXCLU == 4),1,0))),1,0)
+mrg$BE10GaitSeizBehav <- ifelse(((mrg$xGAIT == 2) | (mrg$xNXGENCOM == 1) | ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXPSYCH == 1),1,0), ifelse((mrg$FAILEXCLU == 4),1,0))),1,0)
+
+# E.11 <- Presence of any other toxic, inflammatory, or metabolic disorders causing the symptoms?
+mrg$BE11ToxInfOth <- ifelse((mrg$xORIGPROT == 1),ifelse(((mrg$EXLAB == 1) | (mrg$EXPSYCH == 1) | (mrg$EXABUSE == 1) | (mrg$EXILLNESS == 1) | (mrg$EXNEURO == 1)),1,0),ifelse((mrg$FAILEXCLU == 0),0,1))
+
+# E.12 <- FLAIR or T2 consistent with infectious insult?
+mrg$BE12ImgInfectious <- ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXNIMAG == 1),1,0), ifelse((mrg$CEMRI == 1),1,0))
+
+# Exclusion criteria assessment algorithm
+mrg <- mrg %>%
+  mutate(Iwg16ExcAs = case_when(
+    ((Iwg16FunAs == "No cognitive syndrome, functional")) ~ "No clinical syndrome",
+    ((Iwg16FunAs == "No cognitive syndrome, not functional")) ~ "No cognitive syndrome, not functional",
+    ((Iwg16FunAs == "Non-AD cognitive impairment")) ~ "Non-AD cognitive impairment",
+    ((Iwg16FunAs == "Typical AD cognitive syndrome") & ((BE01SuddenOnset == 1) | (BE08PrevDem == 1) | (BE09Depression == 1) | (BE10GaitSeizBehav == 1) | (BE11ToxInfOth == 1) | (BE12ImgInfectious == 1))) ~ "Non-AD clinical syndrome",
+    ((Iwg16FunAs == "Typical AD cognitive syndrome") & ((BE02FocalFeatures == 1) | (BE03HistVascular == 1) | (BE04ImgVascular == 1) | (BE05ExPyrSigns == 1) | (BE06Hallucin == 1))) ~ "Mixed AD clinical syndrome",
+    ((Iwg16FunAs == "Typical AD cognitive syndrome") & (BE01SuddenOnset == 0) & (BE08PrevDem == 0) & (BE09Depression == 0) & (BE10GaitSeizBehav == 0) & (BE11ToxInfOth == 0) & (BE12ImgInfectious == 0) & (BE02FocalFeatures == 0) & (BE03HistVascular == 0) & (BE04ImgVascular == 0) & (BE05ExPyrSigns == 0) & (BE06Hallucin == 0)) ~ "Typical AD clinical syndrome",
+    ((Iwg16FunAs == "Atypical AD cognitive syndrome") & ((BE01SuddenOnset == 1) | (BE08PrevDem == 1) | (BE09Depression == 1) | (BE10GaitSeizBehav == 1) | (BE11ToxInfOth == 1) | (BE12ImgInfectious == 1))) ~ "Non-AD clinical syndrome",
+    ((Iwg16FunAs == "Atypical AD cognitive syndrome") & ((BE02FocalFeatures == 1) | (BE03HistVascular == 1) | (BE04ImgVascular == 1) | (BE05ExPyrSigns == 1) | (BE06Hallucin == 1))) ~ "Mixed AD clinical syndrome",
+    ((Iwg16FunAs == "Atypical AD cognitive syndrome") & ((BE01SuddenOnset == 0) & (BE08PrevDem == 0) & (BE09Depression == 0) & (BE10GaitSeizBehav == 0) & (BE11ToxInfOth == 0) & (BE12ImgInfectious == 0) & (BE02FocalFeatures == 0) & (BE03HistVascular == 0) & (BE04ImgVascular == 0) & (BE05ExPyrSigns == 0) & (BE06Hallucin == 0))) ~ "Atypical AD clinical syndrome",
+    ((Iwg16FunAs == "Prodromal AD cognitive syndrome") & ((BE01SuddenOnset == 1) | (BE08PrevDem == 1) | (BE09Depression == 1) | (BE10GaitSeizBehav == 1) | (BE11ToxInfOth == 1) | (BE12ImgInfectious == 1))) ~ "MCI undetermined clinical syndrome",
+    ((Iwg16FunAs == "Prodromal AD cognitive syndrome") & (BE01SuddenOnset == 0) & (BE08PrevDem == 0) & (BE09Depression == 0) & (BE10GaitSeizBehav == 0) & (BE11ToxInfOth == 0) & (BE12ImgInfectious == 0)) ~ "Prodromal AD clinical syndrome",
+))
+
+```
+
+## 3.4 Biomarkers assessment
+```{r}
+
+# B.01 -> Presence of AD autosomal dominant mutation (PSEN1, PSEN2, APP)
+mrg$BB01Genetic <- 0 # not available
+
+# B.02 -> Evidence of amyloid pathology
+mrg$BB02Amyloidosis <- ifelse((mrg$xPIB == 0 & mrg$xAV45 == 0 & mrg$xCsfABETA == 0),0,1)
+
+# B.03 -> Evidence of tau pathology
+mrg$BB03Tauopathy <- mrg$xCsfPTAU
+
+# B.04 -> Increased tracer retention on amyloid PET
+mrg$BB04AmyloidPet <- mrg$xAV45
+
+# B.05 Decreased CSF Aβ1-42
+mrg$BB05CsfAbeta <- mrg$xCsfABETA
+
+# B.06. Increased CSF p-tau
+mrg$BB06CsfPtau <- mrg$xCsfPTAU
+
+# B.07. Increased CSF t-tau
+mrg$BB07CsfTtau <- mrg$xCsfTTAU
+
+# Biomarkers assessment algorithm
+mrg <- mrg %>%
+  mutate(Iwg16BioAs = case_when(
+    ((Iwg16ExcAs == "No clinical syndrome") & (BB01Genetic == 1)) ~ "Presymptomatic AD",
+    ((Iwg16ExcAs == "No clinical syndrome") & (BB01Genetic == 0) & (BB02Amyloidosis == 1) & (BB03Tauopathy == 1)) ~ "Preclinical AD",
+    ((Iwg16ExcAs == "No clinical syndrome") & (BB01Genetic == 0) & (BB02Amyloidosis == 1) & (BB03Tauopathy == 0)) ~ "Asymptomatic at risk for AD",
+    ((Iwg16ExcAs == "No clinical syndrome") & (BB01Genetic == 0) & (BB02Amyloidosis == 0) & (BB03Tauopathy == 1)) ~ "Asymptomatic at risk for AD",
+    ((Iwg16ExcAs == "No clinical syndrome") & (BB01Genetic == 0) & (BB02Amyloidosis == 0) & (BB03Tauopathy == 0)) ~ "Cognitively unimpaired, normal AD biomarkers",
+    ((Iwg16ExcAs == "Typical AD clinical syndrome") & (BB01Genetic == 1)) ~ "Typical AD",
+    ((Iwg16ExcAs == "Typical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 1)) ~ "Typical AD",
+    ((Iwg16ExcAs == "Typical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 1)) ~ "Typical AD",
+    ((Iwg16ExcAs == "Typical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 1)) ~ "Typical AD",
+    ((Iwg16ExcAs == "Typical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Typical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Mixed AD clinical syndrome") & (BB04AmyloidPet == 1)) ~ "Mixed AD",
+    ((Iwg16ExcAs == "Mixed AD clinical syndrome") & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 1)) ~ "Mixed AD",
+    ((Iwg16ExcAs == "Mixed AD clinical syndrome") & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 1)) ~ "Mixed AD",
+    ((Iwg16ExcAs == "Mixed AD clinical syndrome") & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Mixed AD clinical syndrome") & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Atypical AD clinical syndrome") & (BB01Genetic == 1)) ~ "Atypical AD",
+    ((Iwg16ExcAs == "Atypical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 1)) ~ "Atypical AD",
+    ((Iwg16ExcAs == "Atypical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 1)) ~ "Atypical AD",
+    ((Iwg16ExcAs == "Atypical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 1)) ~ "Atypical AD",
+    ((Iwg16ExcAs == "Atypical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Atypical AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Prodromal AD clinical syndrome") & (BB01Genetic == 1)) ~ "Prodromal AD",
+    ((Iwg16ExcAs == "Prodromal AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 1)) ~ "Prodromal AD",
+    ((Iwg16ExcAs == "Prodromal AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 1)) ~ "Prodromal AD",
+    ((Iwg16ExcAs == "Prodromal AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 1)) ~ "Prodromal AD",
+    ((Iwg16ExcAs == "Prodromal AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 1) & (BB07CsfTtau == 0) & (BB06CsfPtau == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "Prodromal AD clinical syndrome") & (BB01Genetic == 0) & (BB04AmyloidPet == 0) & (BB05CsfAbeta == 0)) ~ "Not AD",
+    ((Iwg16ExcAs == "No cognitive syndrome, not functional")) ~ "No cognitive syndrome, not functional",
+    ((Iwg16ExcAs == "Non-AD cognitive impairment")) ~ "Non-AD cognitive impairment",
+    ((Iwg16ExcAs == "Non-AD clinical syndrome")) ~ "Non-AD clinical syndrome",
+    ((Iwg16ExcAs == "MCI undetermined clinical syndrome")) ~ "MCI undetermined clinical syndrome",
+))
+
+```
+
+
+#############################################
+# 4. NIA-AA 2018 (ATN)
+#############################################
+
+## 4.1 Cognitive assessment
+```{r}
+
+# C.01 -> Does the subject present a complaint of cognitive decline?
+mrg$CC01CogComplaint <- ifelse((mrg$xORIGPROT == 1),
+                            ifelse((mrg$DX == "CN"),
+                                   ifelse((mrg$INCMCOMP == 0),1,0),ifelse((mrg$INCMCOMP == 0),0,1)),
+                            ifelse((mrg$DX == "CN"),
+                                   ifelse((mrg$FAILINCLU == 0),0,1),ifelse((mrg$FAILINCLU == 0),1,0)))
+
+# C.02 -> Is there evidence of cognitive decline?
+mrg$CC02ObjEvidenceDecline <- ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1)
+
+# C.03 -> Does the cognitive impairment affect at least two cognitive domains?
+mrg$CC03Domain_atLeastTwo <- ifelse((mrg$DomainMemory + mrg$DomainExecutive + mrg$DomainLanguage + mrg$DomainVisuaospatial + mrg$DomainBehavior) >= 2,1,0)
+
+# Cognitive assessment algorithm
+mrg$Nia18CogAs <- ifelse((mrg$CC01CogComplaint == 0),
+                          "No cognitive impairment",
+                          ifelse((mrg$CC02ObjEvidenceDecline == 0),
+                                 "No cognitive impairment",
+                                 ifelse((mrg$CC03Domain_atLeastTwo == 1), 
+                                        "Cognitive impairment, two domains",
+                                        "Cognitive impairment, one domain")))
+
+```
+
+## 4.2 Functional assessment
+```{r}
+
+# F.01 -> Is the subject`s functionality preserved?
+mrg$CF01Func <- ifelse(mrg$xFAQ == 1,0,1)
+
+# Functional assessment algorithm
+mrg <- mrg %>%
+  mutate(Nia18FunAs = case_when(
+    ((Nia18CogAs == "Cognitive impairment, two domains") & (CF01Func == 0)) ~ "Dementia cognitive syndrome",
+    ((Nia18CogAs == "Cognitive impairment, two domains") & (CF01Func == 1)) ~ "Mild cognitive impairment syndrome",
+    ((Nia18CogAs == "Cognitive impairment, one domain") & (CF01Func == 0)) ~ "One domain cognitive syndrome, not functional",
+    ((Nia18CogAs == "Cognitive impairment, one domain") & (CF01Func == 1)) ~ "Mild cognitive impairment syndrome",
+    ((Nia18CogAs == "No cognitive impairment") & (CF01Func == 0)) ~ "No cognitive syndrome, not functional",
+    ((Nia18CogAs == "No cognitive impairment") & (CF01Func == 1)) ~ "No cognitive syndrome, functional",
+  ))
+
+```
+
+## 4.3 Exclusion criteria assessment
+```{r}
+
+# Functional assessment algorithm
+mrg <- mrg %>%
+  mutate(Nia18ExcAs = case_when(
+    (Nia18FunAs == "No cognitive syndrome, not functional") ~ "No cognitive syndrome, not functional",
+    (Nia18FunAs == "One domain cognitive syndrome, not functional") ~ "One domain cognitive syndrome, not functional",
+    (Nia18FunAs == "Dementia cognitive syndrome") ~ "Dementia clinical syndrome",
+    (Nia18FunAs == "Mild cognitive impairment syndrome") ~ "Mild cognitive impairment clinical syndrome",
+    (Nia18FunAs == "No cognitive syndrome, functional") ~ "No clinical syndrome",
+  ))
+
+```
+
+## 4.4 Biomarkers assessment
+```{r}
+
+# B.01 -> Evidence of amyloid pathology
+mrg$CB01AmyloidosisNia18 <- ifelse((mrg$xPIB == 0 & mrg$xAV45 == 0 & mrg$xCsfABETA == 0),0,1)
+
+# B.02 -> Evidence of tau pathology
+mrg$CB02TauopathyNia18 <- ifelse(mrg$PTAU > 24, 1, 0)
+
+# B.03 -> Evidence of neurodegeneration
+mrg$CB03NeurodegNia18 <- ifelse((mrg$xFDG == 0 & mrg$xHVa == 0 & mrg$xCsfTTAU == 0),0,1)
+
+# Biomarkers assessment algorithm
+mrg <- mrg %>%
+  mutate(Nia18BioAs = case_when(
+    ((Nia18ExcAs == "No clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 1) & ((CB03NeurodegNia18 == 0) | (CB03NeurodegNia18 == 1))) ~ "Preclinical Alzheimer's disease",
+    ((Nia18ExcAs == "No clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 1)) ~ "Alzheimer's and conconmitant suspected non-Alzheimer's pathologic change, cognitively unimpaired",
+    ((Nia18ExcAs == "No clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 0)) ~ "Preclinical Alzheimer's pathologic change",
+    ((Nia18ExcAs == "No clinical syndrome") & (CB01AmyloidosisNia18 == 0) & ((CB02TauopathyNia18 == 1) & ((CB03NeurodegNia18 == 1) | (CB03NeurodegNia18 == 0)))) ~ "Non-Alzheimer's pathologic change, cognitively unimpaired",
+    ((Nia18ExcAs == "No clinical syndrome") & (CB01AmyloidosisNia18 == 0) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 1)) ~ "Non-Alzheimer's pathologic change, cognitively unimpaired",
+    ((Nia18ExcAs == "No clinical syndrome") & (CB01AmyloidosisNia18 == 0) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 0)) ~ "Normal AD biomarkers, cognitively unimpaired",
+    ((Nia18ExcAs == "Dementia clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 1) & ((CB03NeurodegNia18 == 1) | (CB03NeurodegNia18 == 0))) ~ "Alzheimer`s disease with dementia",
+    ((Nia18ExcAs == "Dementia clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 1)) ~ "Alzheimer's and concomited suspected non-Alzheimer's pathologic change with dementia",
+    ((Nia18ExcAs == "Dementia clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 0)) ~ "Alzheimer's pathologic change with dementia",
+    ((Nia18ExcAs == "Dementia clinical syndrome") & (CB01AmyloidosisNia18 == 0) & ((CB02TauopathyNia18 == 1) & ((CB03NeurodegNia18 == 1) | (CB03NeurodegNia18 == 0)))) ~ "Non-Alzheimer's pathologic change with dementia",
+    ((Nia18ExcAs == "Dementia clinical syndrome") & (CB01AmyloidosisNia18 == 0) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 1)) ~ "Non-Alzheimer's pathologic change with dementia",
+    ((Nia18ExcAs == "Dementia clinical syndrome") & (CB01AmyloidosisNia18 == 0) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 0)) ~ "Normal AD biomarkers with dementia",
+    ((Nia18ExcAs == "Mild cognitive impairment clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 1) & ((CB03NeurodegNia18 == 1) | (CB03NeurodegNia18 == 0))) ~ "Alzheimer`s disease with MCI",
+    ((Nia18ExcAs == "Mild cognitive impairment clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 1)) ~ "Alzheimer's and concomited suspected non-Alzheimer's pathologic change with MCI",
+    ((Nia18ExcAs == "Mild cognitive impairment clinical syndrome") & (CB01AmyloidosisNia18 == 1) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 0)) ~ "Alzheimer's pathologic change with MCI",
+    ((Nia18ExcAs == "Mild cognitive impairment clinical syndrome") & (CB01AmyloidosisNia18 == 0) & ((CB02TauopathyNia18 == 1) & ((CB03NeurodegNia18 == 1) | (CB03NeurodegNia18 == 0)))) ~ "Non-Alzheimer's pathologic change with MCI",
+    ((Nia18ExcAs == "Mild cognitive impairment clinical syndrome") & (CB01AmyloidosisNia18 == 0) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 1)) ~ "Non-Alzheimer's pathologic change with MCI",
+    ((Nia18ExcAs == "Mild cognitive impairment clinical syndrome") & (CB01AmyloidosisNia18 == 0) & (CB02TauopathyNia18 == 0) & (CB03NeurodegNia18 == 0)) ~ "Normal AD biomarkers with MCI",
+    (Nia18ExcAs == "One domain cognitive syndrome, not functional") ~ "One domain cognitive syndrome, not functional",
+    (Nia18ExcAs == "No cognitive syndrome, not functional") ~ "No cognitive syndrome, not functional",
+    ))
+
+```
+
+
+#############################################
+# 5. IWG 2021
+#############################################
+
+## 5.1 Cognitive assessment
+```{r}
+
+# C.01 -> Does the subject present a complaint of cognitive decline?
+mrg$DC01CogComplaint <- ifelse((mrg$xORIGPROT == 1),ifelse((mrg$DX == "CN"),ifelse((mrg$INCMCOMP == 0),ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1),0),ifelse((mrg$INCMCOMP == 0),0,ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1))),ifelse((mrg$DX == "CN"),ifelse((mrg$FAILINCLU == 0),0,ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1)),ifelse((mrg$FAILINCLU == 0),ifelse((mrg$xCATANIMSC_z == 0 & mrg$xBNTSPONT_z == 0 & mrg$xTRABSCOR_z == 0 & mrg$xLIMMTOTAL_z == 0 & mrg$xLDELTOTAL_z == 0 & mrg$xAVDEL30MIN_moans_z == 0 & mrg$xAVDELTOT_moans_z == 0),0,1),0)))
+
+# C.02 -> Is the impairment of the amnestic type?
+mrg$DC02TypeAmnestic <- mrg$DomainMemory
+
+# C.03 -> Is the impairment of the posterior cortical atrophy type?
+mrg$DC03TypePostCA <- 0 
+
+# C.04 -> Is the impairment of the logopenic variant primary progressive aphasia type?
+mrg$DC04TypeLogopenic <- mrg$DomainLanguage
+
+# C.05 -> Is the impairment of the behavioral-disexecutive type?
+mrg$DC05TypeBehDisex <- mrg$DomainExec
+
+# C.06 -> Is the impairment of the cortico-basal syndrome type?
+mrg$DC06TypeCortBasal <- 0 
+
+# C.07 -> Is the impairment of the semantic or non-fluent variants of primary progressive aphasia type?  
+mrg$DC07TypeOtherPPA <- 0 
+
+# Cognitive assessment algorithm
+mrg <- mrg %>%
+  mutate(Iwg21CogAs = case_when(
+    ((DC01CogComplaint == 0)) ~ "No cognitive impairment",
+    ((DC01CogComplaint == 1) & ((DC02TypeAmnestic == 1) | (DC03TypePostCA == 1) | (DC04TypeLogopenic == 1))) ~ "Common AD cognitive impairment",
+    ((DC01CogComplaint == 1) & (DC02TypeAmnestic == 0) & (DC03TypePostCA == 0) & (DC04TypeLogopenic == 0) & ((DC05TypeBehDisex == 1) | (DC06TypeCortBasal == 1) | (DC07TypeOtherPPA == 1))) ~ "Uncommon AD cognitive impairment",
+    ((DC01CogComplaint == 1) & (DC02TypeAmnestic == 0) & (DC03TypePostCA == 0) & (DC04TypeLogopenic == 0) & (DC05TypeBehDisex == 0) & (DC06TypeCortBasal == 0) & (DC07TypeOtherPPA == 0)) ~ "Other cognitive impairment",
+  ))
+
+```
+
+## 5.2 Functional assessment
+```{r}
+
+# F.01 -> Is the subject`s functionality preserved?
+mrg$DF01Func <- ifelse(mrg$xFAQ == 1,0,1)
+
+# Functional assessment algorithm
+mrg <- mrg %>%
+  mutate(Iwg21FunAs = case_when(
+    ((Iwg21CogAs == "Other cognitive impairment")) ~ "Other cognitive syndrome",
+    ((Iwg21CogAs == "No cognitive impairment") & (DF01Func == 0)) ~ "No cognitive syndrome, not functional",
+    ((Iwg21CogAs == "No cognitive impairment") & (DF01Func == 1)) ~ "No cognitive syndrome, functional",
+    ((Iwg21CogAs == "Common AD cognitive impairment") & (DF01Func == 0)) ~ "Common AD cognitive syndrome",
+    ((Iwg21CogAs == "Common AD cognitive impairment") & (DF01Func == 1)) ~ "Prodromal common AD cognitive syndrome",
+    ((Iwg21CogAs == "Uncommon AD cognitive impairment") & (DF01Func == 0)) ~ "Uncommon AD cognitive syndrome",
+    ((Iwg21CogAs == "Uncommon AD cognitive impairment") & (DF01Func == 1)) ~ "Prodromal uncommon AD cognitive syndrome",
+  ))
+
+```
+
+## 5.3 Exclusion criteria assessment
+```{r}
+
+# E.01 <- Sudden onset of symptoms?
+mrg$DE01SuddenOnset <- ifelse((mrg$HMONSET == 1),1,0)
+
+# E.02 <- Presence of focal neurological signs or symptoms?
+mrg$DE02FocalFeatures <- ifelse(((mrg$HMNEURSG != 2) & (mrg$HMNEURSM != 2)),0,1)
+
+# E.03 <- History of cerebrovascular disease?
+mrg$DE03HistVascular <- ifelse(mrg$HMSCORE > 4,1,0)
+
+# E.04 <- FLAIR or T2 consistent with vascular disease?
+mrg$DE04ImgVascular <- ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXNIMAG == 1),1,0), ifelse((mrg$CEMRI == 1) | mrg$BrainInfarcts == 1,1,0))
+
+# E.05 <- Presence of early extrapyramidal signs?
+mrg$DE05ExPyrSigns <- ifelse((mrg$DXPARK == 1),1,0)
+
+# E.06 <- Presence of early hallucinations?
+mrg$DE06Hallucin <- ifelse((mrg$NPIB == 1),1,0)
+
+# E.07 <- Presence of cognitive fluctuations?
+mrg$DE07CogFluc <- 0 # No available data on cognitive fluctuation
+
+# E.08 <- Previous diagnosis of non-AD dementia?
+mrg$DE08PrevDem <- ifelse((mrg$DXODES == 0),0,1)
+
+# E.09 <- Presence of symptoms of major depression?
+mrg$DE09Depression <- ifelse((ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXPSYCH == 1),1,0), ifelse((mrg$FAILEXCLU == 4),1,0)) | (mrg$DXODES == 5) | (mrg$DXMOTHET == "Major Depression") | (mrg$xGDTOTAL == 1)),1,0)
+
+# E.10 <- Early occurence of: gait disturbances, seizures, major and prevalent behavioral changes?
+mrg$xNXGENCOM <- grepl("seizure", mrg$NXGENCOM)
+mrg$DE10GaitSeizBehav <- ifelse(((mrg$xGAIT == 1) | (mrg$xNXGENCOM == 1) | ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXPSYCH == 1),1,0), ifelse((mrg$FAILEXCLU == 4),1,0))),1,0)
+mrg$DE10GaitSeizBehav <- ifelse(((mrg$xGAIT == 2) | (mrg$xNXGENCOM == 1) | ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXPSYCH == 1),1,0), ifelse((mrg$FAILEXCLU == 4),1,0))),1,0)
+
+# E.11 <- Presence of any other toxic, inflammatory, or metabolic disorders causing the symptoms?
+mrg$DE11ToxInfOth <- ifelse((mrg$xORIGPROT == 1),ifelse(((mrg$EXLAB == 1) | (mrg$EXPSYCH == 1) | (mrg$EXABUSE == 1) | (mrg$EXILLNESS == 1) | (mrg$EXNEURO == 1)),1,0),ifelse((mrg$FAILEXCLU == 0),0,1))
+
+# E.12 <- FLAIR or T2 consistent with infectious insult?
+mrg$DE12ImgInfectious <- ifelse((mrg$xORIGPROT == 1), ifelse((mrg$EXNIMAG == 1),1,0), ifelse((mrg$CEMRI == 1),1,0))
+
+# Exclusion criteria assessment algorithm
+mrg <- mrg %>%
+  mutate(Iwg21ExcAs = case_when(
+    ((Iwg21FunAs == "No cognitive syndrome, not functional")) ~ "No cognitive syndrome, not functional",
+    ((Iwg21FunAs == "No cognitive syndrome, functional")) ~ "No clinical syndrome",
+    ((Iwg21FunAs == "Other cognitive syndrome")) ~ "Other clinical syndrome",
+    ((Iwg21FunAs == "No cognitive syndrome, not functional")) ~ "No cognitive syndrome, not functional",
+    ((Iwg21FunAs == "Prodromal common AD cognitive syndrome" & (DE01SuddenOnset + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious == 0))) ~ "Prodromal common AD clinical syndrome",
+    ((Iwg21FunAs == "Prodromal common AD cognitive syndrome" & (DE01SuddenOnset + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious > 0))) ~ "MCI undetermined clinical syndrome",
+    ((Iwg21FunAs == "Common AD cognitive syndrome" & (DE01SuddenOnset + DE02FocalFeatures + DE03HistVascular + DE04ImgVascular + DE05ExPyrSigns + DE06Hallucin + DE07CogFluc + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious == 0))) ~ "Common AD clinical syndrome",
+    ((Iwg21FunAs == "Common AD cognitive syndrome" & (DE01SuddenOnset + DE02FocalFeatures + DE03HistVascular + DE04ImgVascular + DE05ExPyrSigns + DE06Hallucin + DE07CogFluc + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious > 0))) ~ "Non-AD clinical syndrome",
+    ((Iwg21FunAs == "Prodromal uncommon AD cognitive syndrome" & (DE01SuddenOnset + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious == 0))) ~ "Prodromal uncommon AD clinical syndrome",
+    ((Iwg21FunAs == "Prodromal uncommon AD cognitive syndrome" & (DE01SuddenOnset + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious > 0))) ~ "MCI undetermined clinical syndrome",
+    ((Iwg21FunAs == "Uncommon AD cognitive syndrome" & (DE01SuddenOnset + DE02FocalFeatures + DE03HistVascular + DE04ImgVascular + DE05ExPyrSigns + DE06Hallucin + DE07CogFluc + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious == 0))) ~ "Uncommon AD clinical syndrome",
+    ((Iwg21FunAs == "Uncommon AD cognitive syndrome" & (DE01SuddenOnset + DE02FocalFeatures + DE03HistVascular + DE04ImgVascular + DE05ExPyrSigns + DE06Hallucin + DE07CogFluc + DE08PrevDem + DE09Depression + DE10GaitSeizBehav + DE11ToxInfOth + DE12ImgInfectious > 0))) ~ "Non-AD clinical syndrome",
+))
+
+```
+
+## 5.4 Biomarkers assessment
+```{r}
+
+# B.01 -> Known carrier of dominant autossomal mutation?
+mrg$DB01DomAutoMut <- 0 # not included
+
+# B.02 -> Homozygous APOE ε4 carrier?
+mrg$DB02Apoe4 <- ifelse(mrg$APOE4 == 2,1,0)
+
+# B.03 -> Tau PET positive outside the limbic cortex?
+mrg$DB03TauPetPosUnim <- 0
+
+# B.04 -> CSF of PET positive for amyloid and tau pathology?
+mrg$DB04AbetaAndTau <- ifelse(((mrg$xCsfABETA == 1) & (mrg$xCsfPTAU == 1)),1,0)
+
+# B.05 -> Evidence of amyloid pathology?
+mrg$DB05Abeta <- ifelse((mrg$xPIB == 0 & mrg$xAV45 == 0 & mrg$xCsfABETA == 0),0,1)
+
+# B.06 -> Evidence of tau pathology?
+mrg$DB06Tau <- mrg$xCsfPTAU
+
+# Biomarkers assessment algorithm
+mrg <- mrg %>%
+  mutate(Iwg21BioAs = case_when(
+    ((Iwg21ExcAs == "No clinical syndrome") & (DB01DomAutoMut == 1)) ~ "Absolute risk for developing AD",
+    ((Iwg21ExcAs == "No clinical syndrome") & (DB01DomAutoMut == 0) & (DB02Apoe4 == 1)) ~ "High risk for developing AD",
+    ((Iwg21ExcAs == "No clinical syndrome") & (DB01DomAutoMut == 0) & (DB02Apoe4 == 0) & ((DB03TauPetPosUnim == 1) | (DB04AbetaAndTau == 1))) ~ "High risk for developing AD",
+    ((Iwg21ExcAs == "No clinical syndrome") & (DB01DomAutoMut == 0) & (DB02Apoe4 == 0) & (DB03TauPetPosUnim == 0) & (DB04AbetaAndTau == 0) & ((DB05Abeta == 1) | (DB06Tau == 1))) ~ "Undefined risk for developing AD",
+    ((Iwg21ExcAs == "No clinical syndrome") & (DB01DomAutoMut == 0) & (DB02Apoe4 == 0) & ((DB03TauPetPosUnim == 0) & (DB05Abeta == 0) & (DB06Tau == 0))) ~ "No clinical syndrome, no positive biomarkers",
+    ((Iwg21ExcAs == "Common AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 1)) ~ "Highly probable AD - established",
+    ((Iwg21ExcAs == "Common AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 0)) ~ "Probable AD",
+    ((Iwg21ExcAs == "Common AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 1)) ~ "Possible AD",
+    ((Iwg21ExcAs == "Common AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 0)) ~ "Highly unlikely AD - excluded",
+    ((Iwg21ExcAs == "Prodromal common AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 1)) ~ "Highly probable prodromal AD - established",
+    ((Iwg21ExcAs == "Prodromal common AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 0)) ~ "Probable prodromal AD",
+    ((Iwg21ExcAs == "Prodromal common AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 1)) ~ "Possible prodromal AD",
+    ((Iwg21ExcAs == "Prodromal common AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 0)) ~ "Highly unlikely AD - excluded",
+    ((Iwg21ExcAs == "Uncommon AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 1)) ~ "Probable AD",
+    ((Iwg21ExcAs == "Uncommon AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 0)) ~ "Possible AD",
+    ((Iwg21ExcAs == "Uncommon AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 1)) ~ "Unlikely AD",
+    ((Iwg21ExcAs == "Uncommon AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 0)) ~ "Highly unlikely AD - excluded",
+    ((Iwg21ExcAs == "Prodromal uncommon AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 1)) ~ "Probable prodromal AD",
+    ((Iwg21ExcAs == "Prodromal uncommon AD clinical syndrome") & (DB05Abeta == 1) & (DB06Tau == 0)) ~ "Possible prodromal AD",
+    ((Iwg21ExcAs == "Prodromal uncommon AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 1)) ~ "Unlikely AD",
+    ((Iwg21ExcAs == "Prodromal uncommon AD clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 0)) ~ "Highly unlikely AD - excluded",
+    ((Iwg21ExcAs == "Other clinical syndrome") & (DB05Abeta == 1)) ~ "Unlikely AD",
+    ((Iwg21ExcAs == "Other clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 1)) ~ "Unlikely AD",
+    ((Iwg21ExcAs == "Other clinical syndrome") & (DB05Abeta == 0) & (DB06Tau == 0)) ~ "Highly unlikely AD - excluded",
+    ((Iwg21ExcAs == "No cognitive syndrome, not functional")) ~ "No cognitive syndrome, not functional",
+    ((Iwg21ExcAs == "MCI undetermined clinical syndrome")) ~ "MCI undetermined clinical syndrome",
+    ((Iwg21ExcAs == "Non-AD clinical syndrome")) ~ "Non-AD clinical syndrome",
+  ))
+
+```
+
+#############################################
+# 6. REORGANIZING OUTPUTS
+#############################################
+
+## 6.1 "Final" columns
+``` {r}
+
+mrg$Nia11Final <- mrg$Nia11BioAs
+mrg$Iwg16Final <- mrg$Iwg16BioAs
+mrg$Nia18Final <- mrg$Nia18BioAs
+mrg$Iwg21Final <- mrg$Iwg21BioAs
+
+```
+
+## 6.2 AD continuum labels
+``` {r}
+
+labelsF <- filter(labels, stage == "bio")
+
+# find continuum labels
+tempVec <- match(mrg$Nia11Final,labelsF$diagnosis)
+mrg$Nia11FinalLabel <- labelsF[tempVec,4]
+tempVec <- match(mrg$Iwg16Final,labelsF$diagnosis)
+mrg$Iwg16FinalLabel <- labelsF[tempVec,4]
+tempVec <- match(mrg$Nia18Final,labelsF$diagnosis)
+mrg$Nia18FinalLabel <- labelsF[tempVec,4]
+tempVec <- match(mrg$Iwg21Final,labelsF$diagnosis)
+mrg$Iwg21FinalLabel <- labelsF[tempVec,4]
+
+```
+
+## 6.3 Cognition labels
+```{r}
+
+labels2F <- filter(labels,stage == "bio")
+
+# find cognition labels
+tempVec <- match(mrg$Nia11Final,labels2F$diagnosis)
+mrg$Nia11CogLabel <- labels2F[tempVec,6]
+tempVec <- match(mrg$Iwg16Final,labels2F$diagnosis)
+mrg$Iwg16CogLabel <- labels2F[tempVec,6]
+tempVec <- match(mrg$Nia18Final,labels2F$diagnosis)
+mrg$Nia18CogLabel <- labels2F[tempVec,6]
+tempVec <- match(mrg$Iwg21Final,labels2F$diagnosis)
+mrg$Iwg21CogLabel <- labels2F[tempVec,6]
+
+
+```
+
+#############################################
+# 7. SANKEY DIAGRAMS
+#############################################
+
+## 7.1 Organizing data frames
+``` {r}
+
+# NIA-AA 2011
+nia11SpDf = mrg %>%
+  select(Nia11CogAs,Nia11FunAs,Nia11ExcAs,Nia11BioAs)
+nia11SpDf$Nia11Start <- "All subjects"
+nia11SpDf <- nia11SpDf[,c(5,1:4)]
+nia11Links <-
+  nia11SpDf %>% 
+  mutate(row = row_number()) %>%  # add a row id
+  gather('col', 'source', -row) %>%  # gather all columns
+  mutate(col = match(col, names(nia11SpDf))) %>%  # convert col names to col nums
+  mutate(source = paste0(source, '_', col)) %>%  # add col num to node names
+  group_by(row) %>%
+  arrange(col) %>%
+  mutate(target = lead(source)) %>%  # get target from following node in row
+  ungroup() %>% 
+  filter(!is.na(target)) %>%  # remove links from last column in original data
+  select(source, target) %>% 
+  group_by(source, target) %>% 
+  summarise(value = n())  # aggregate and count similar links
+nia11Nodes <- data.frame(id = unique(c(nia11Links$source, nia11Links$target)), stringsAsFactors = FALSE)
+nia11Nodes$name <- sub('_[0-9]*$', '', nia11Nodes$id)
+nia11Nodes$group <- labelsF[match(nia11Nodes$name,labelsF$diagnosis),4]
+nia11Nodes$group <- ifelse(is.na(nia11Nodes$group),"wip",nia11Nodes$group)
+nia11Links$source <- match(nia11Links$source, nia11Nodes$id) - 1
+nia11Links$target <- match(nia11Links$target, nia11Nodes$id) - 1
+
+# IWG 2016
+iwg16SpDf = mrg %>%
+  select(Iwg16CogAs,Iwg16FunAs,Iwg16ExcAs,Iwg16BioAs)
+iwg16SpDf$Iwg16Start <- "All subjects"
+iwg16SpDf <- iwg16SpDf[,c(5,1:4)]
+iwg16Links <-
+  iwg16SpDf %>% 
+  mutate(row = row_number()) %>%  # add a row id
+  gather('col', 'source', -row) %>%  # gather all columns
+  mutate(col = match(col, names(iwg16SpDf))) %>%  # convert col names to col nums
+  mutate(source = paste0(source, '_', col)) %>%  # add col num to node names
+  group_by(row) %>%
+  arrange(col) %>%
+  mutate(target = lead(source)) %>%  # get target from following node in row
+  ungroup() %>% 
+  filter(!is.na(target)) %>%  # remove links from last column in original data
+  select(source, target) %>% 
+  group_by(source, target) %>% 
+  summarise(value = n())  # aggregate and count similar links
+iwg16Nodes <- data.frame(id = unique(c(iwg16Links$source, iwg16Links$target)), stringsAsFactors = FALSE)
+iwg16Nodes$name <- sub('_[0-9]*$', '', iwg16Nodes$id)
+iwg16Nodes$group <- labelsF[match(iwg16Nodes$name,labelsF$diagnosis),4]
+iwg16Nodes$group <- ifelse(is.na(iwg16Nodes$group),"wip",iwg16Nodes$group)
+iwg16Links$source <- match(iwg16Links$source, iwg16Nodes$id) - 1
+iwg16Links$target <- match(iwg16Links$target, iwg16Nodes$id) - 1
+
+# NIA-AA 2018
+nia18SpDf = mrg %>%
+  select(Nia18CogAs,Nia18FunAs,Nia18ExcAs,Nia18BioAs)
+nia18SpDf$Nia18Start <- "All subjects"
+nia18SpDf <- nia18SpDf[,c(5,1:4)]
+nia18Links <-
+  nia18SpDf %>% 
+  mutate(row = row_number()) %>%  # add a row id
+  gather('col', 'source', -row) %>%  # gather all columns
+  mutate(col = match(col, names(nia18SpDf))) %>%  # convert col names to col nums
+  mutate(source = paste0(source, '_', col)) %>%  # add col num to node names
+  group_by(row) %>%
+  arrange(col) %>%
+  mutate(target = lead(source)) %>%  # get target from following node in row
+  ungroup() %>% 
+  filter(!is.na(target)) %>%  # remove links from last column in original data
+  select(source, target) %>% 
+  group_by(source, target) %>% 
+  summarise(value = n())  # aggregate and count similar links
+nia18Nodes <- data.frame(id = unique(c(nia18Links$source, nia18Links$target)), stringsAsFactors = FALSE)
+nia18Nodes$name <- sub('_[0-9]*$', '', nia18Nodes$id)
+nia18Nodes$group <- labelsF[match(nia18Nodes$name,labelsF$diagnosis),4]
+nia18Nodes$group <- ifelse(is.na(nia18Nodes$group),"wip",nia18Nodes$group)
+nia18Links$source <- match(nia18Links$source, nia18Nodes$id) - 1
+nia18Links$target <- match(nia18Links$target, nia18Nodes$id) - 1
+
+# IWG 2021
+iwg21SpDf = mrg %>%
+  select(Iwg21CogAs,Iwg21FunAs,Iwg21ExcAs,Iwg21BioAs)
+iwg21SpDf$Iwg21Start <- "All subjects"
+iwg21SpDf <- iwg21SpDf[,c(5,1:4)]
+iwg21Links <-
+  iwg21SpDf %>% 
+  mutate(row = row_number()) %>%  # add a row id
+  gather('col', 'source', -row) %>%  # gather all columns
+  mutate(col = match(col, names(iwg21SpDf))) %>%  # convert col names to col nums
+  mutate(source = paste0(source, '_', col)) %>%  # add col num to node names
+  group_by(row) %>%
+  arrange(col) %>%
+  mutate(target = lead(source)) %>%  # get target from following node in row
+  ungroup() %>% 
+  filter(!is.na(target)) %>%  # remove links from last column in original data
+  select(source, target) %>% 
+  group_by(source, target) %>% 
+  summarise(value = n())  # aggregate and count similar links
+iwg21Nodes <- data.frame(id = unique(c(iwg21Links$source, iwg21Links$target)), stringsAsFactors = FALSE)
+iwg21Nodes$name <- sub('_[0-9]*$', '', iwg21Nodes$id)
+iwg21Nodes$group <- labelsF[match(iwg21Nodes$name,labelsF$diagnosis),4]
+iwg21Nodes$group <- ifelse(is.na(iwg21Nodes$group),"wip",iwg21Nodes$group)
+iwg21Links$source <- match(iwg21Links$source, iwg21Nodes$id) - 1
+iwg21Links$target <- match(iwg21Links$target, iwg21Nodes$id) - 1
+
+```
+
+## 7.2 Sankey plots
+```{r}
+
+my_color <- 'd3.scaleOrdinal()
+                    .domain(["AD", "not_AD","not_AD_at_risk","wip"]) 
+                    .range(["#a70098","#00a878","#0f4d92","#black","#2C7DA0"])'
+
+nia11Sp <- sankeyNetwork(Links = nia11Links, Nodes = nia11Nodes, height = 700, width = 700, Source = 'source', Target = 'target', Value = 'value', NodeID = 'name', NodeGroup = "group", colourScale = my_color)
+iwg16Sp <- sankeyNetwork(Links = iwg16Links, Nodes = iwg16Nodes, height = 700, width = 700, Source = 'source', Target = 'target', Value = 'value', NodeID = 'name', NodeGroup = "group", colourScale = my_color)
+nia18Sp <- sankeyNetwork(Links = nia18Links, Nodes = nia18Nodes, height = 700, width = 700, Source = 'source', Target = 'target', Value = 'value', NodeID = 'name', NodeGroup = "group", colourScale = my_color)
+iwg21Sp <- sankeyNetwork(Links = iwg21Links, Nodes = iwg21Nodes, height = 700, width = 700, Source = 'source', Target = 'target', Value = 'value', NodeID = 'name', NodeGroup = "group", colourScale = my_color)
+nia11Sp
+iwg16Sp
+nia18Sp
+iwg21Sp
+
+```
+
+## 7.3 Saving plots to html widgets - DEPRECATED
+```{r}
+
+#saveWidget(nia11Sp, file="./HtmlWidget-nia11/nia11SankeyPlot.html")
+#saveWidget(iwg16Sp, file="./HtmlWidget-iwg16/iwg16SankeyPlot.html")
+#saveWidget(nia18Sp, file="./HtmlWidget-nia18/nia18SankeyPlot.html")
+#saveWidget(iwg21Sp, file="./HtmlWidget-iwg21/iwg21SankeyPlot.html")
+
+```
+
+## 7.4 Building shiny apps to export pdf
+```{r}
+
+### 7.4.1 NIA-AA 2011
+
+#### 7.4.1.1 Server
+serverNia11 <- function(input, output) {
+  output$sankey <- renderSankeyNetwork({
+    sankeyNetwork(Links = nia11Links,
+                  Nodes = nia11Nodes,
+                  Source = 'source',
+                  Target = 'target',
+                  Value = 'value',
+                  NodeID = 'name',
+                  height = 700,
+                  width = 700,
+                  NodeGroup = "group",
+                  colourScale = my_color)
+  })
+  output$size <- renderText("700x700")}
+
+#### 7.4.1.2 User interface
+uiNia11 <- shinyUI(fluidPage(mainPanel(tabsetPanel(tabPanel("Sankey Network", sankeyNetworkOutput("sankey"))))))
+
+### 7.4.2 IWG 2016
+
+#### 7.4.2.1 Server
+serverIwg16 <- function(input, output) {
+  output$sankey <- renderSankeyNetwork({
+    sankeyNetwork(Links = iwg16Links,
+                  Nodes = iwg16Nodes,
+                  Source = 'source',
+                  Target = 'target',
+                  Value = 'value',
+                  NodeID = 'name',
+                  height = 700,
+                  width = 700,
+                  NodeGroup = "group",
+                  colourScale = my_color)
+    })}
+
+# 7.4.2.2 User interface
+uiIwg16 <- shinyUI(fluidPage(mainPanel(tabsetPanel(tabPanel("Sankey Network", sankeyNetworkOutput("sankey"))))))
+
+### 7.4.3 NIA-AA 2018
+
+#### 7.4.3.1 Server
+serverNia18 <- function(input, output) {
+  output$sankey <- renderSankeyNetwork({
+    sankeyNetwork(Links = nia18Links,
+                  Nodes = nia18Nodes,
+                  Source = 'source',
+                  Target = 'target',
+                  Value = 'value',
+                  NodeID = 'name',
+                  height = 700,
+                  width = 700,
+                  NodeGroup = "group",
+                  colourScale = my_color)
+    })}
+
+#### 7.4.3.2 User interface
+uiNia18 <- shinyUI(fluidPage(mainPanel(tabsetPanel(tabPanel("Sankey Network", sankeyNetworkOutput("sankey"))))))
+
+### 7.4.4 IWG 2021
+
+#### 7.4.4.1 Server
+serverIwg21 <- function(input, output) {
+  output$sankey <- renderSankeyNetwork({
+    sankeyNetwork(Links = iwg21Links,
+                  Nodes = iwg21Nodes,
+                  Source = 'source',
+                  Target = 'target',
+                  Value = 'value',
+                  NodeID = 'name',
+                  height = 700,
+                  width = 700,
+                  NodeGroup = "group",
+                  colourScale = my_color)
+    })}
+
+#### 7.4.4.2 User interface
+uiIwg21 <- shinyUI(fluidPage(mainPanel(tabsetPanel(tabPanel("Sankey Network", sankeyNetworkOutput("sankey"))))))
+
+```
+
+#############################################
+# 8. CHORD DIAGRAMS
+#############################################
+
+## 8.1 Organize input data
+``` {r}
+
+labelResume <- mrg[,c(1,grep(pattern = "finallabel", x = colnames(mrg), ignore.case = TRUE))]
+colnames(labelResume) <- gsub(pattern = "FinalLabel", replacement = "", x = colnames(labelResume))
+labs <- colnames(labelResume)[-1]
+
+###############
+# prepChord_value -- returns a named integer vector with:
+#       - counts of system transition plans
+# ARGUMENTS -- labResume (data.frame), lab (character)
+#       - 'labResume' is a data.frame with the full table and *RID* as unique identifier
+#       - 'lab' is a character vector with the label to evaluate
+###############
+prepChord_value <- function(labResume, lab) {
+  x <- reshape::melt(data = labResume, id.vars = c("RID", lab))
+  x[,lab] <- paste(lab, x[,lab], sep = "x")
+  y <- data.frame("from" = x[,lab], 
+                  "to" = apply(x[,c("variable","value")], 1, paste, collapse = "x"))
+  y <- as.data.frame(table(y))
+  res <- y[,3]
+  names(res) <- apply(y[,1:2], 1, paste, collapse = "|")
+  return(res)
+}
+prepList <- lapply(labs, function(x, labResume) {prepChord_value(labResume = labResume, lab = x)},
+                   labResume = labelResume)
+prepList <- do.call("c", prepList)
+
+### 8.1.1 Links
+from_x <- c(rep("Nia11",27),rep("Iwg16",27),rep("Nia18",27),rep("Iwg21",27))
+from_y <- c(rep(c(rep("AD",3),rep("not_AD",3),rep("not_AD_at_risk",3)),12))
+to_x <- c(rep("Iwg16",9),rep("Nia18",9),rep("Iwg21",9),rep("Nia18",9),rep("Iwg21",9),rep("Nia11",9),rep("Iwg21",9),rep("Nia11",9),rep("Iwg16",9),rep("Nia11",9),rep("Iwg16",9),rep("Nia18",9))
+to_y <- c(rep(c("AD","not_AD","not_AD_at_risk"),36))
+CircosData_link <- data.frame(from_x,from_y,to_x,to_y)
+CircosData_link$from <- apply(CircosData_link[,c("from_x","from_y")], 1, paste, collapse = "x")
+CircosData_link$to <- apply(CircosData_link[,c("to_x","to_y")], 1, paste, collapse = "x")
+CircosData_link$pair <- apply(CircosData_link[,c("from", "to")], 1, 
+                                        paste, collapse = "|")
+row.names(CircosData_link) <- CircosData_link$pair
+CircosData_link$value <- prepList[CircosData_link$pair]
+
+###############
+# prepChord_x -- returns a data.frame vector with:
+#       - coordinates for x1 and x2
+# ARGUMENTS -- fPrep (data.frame)
+#       - 'fPrep' is a data.frame with "from", "to", "value", "x1" and "x2" columns
+###############
+prepChord_x <- function(fPrep) {
+        rnms <- row.names(fPrep)
+        s1 <- sapply(strsplit(x = rnms, split = "\\|"), "[[", 1)
+        s2 <- sapply(strsplit(x = rnms, split = "\\|"), "[[", 2)
+        s2 <- sapply(strsplit(x = s2, split = "x"), "[[", 1)
+        grp <- paste(s1,s2, sep = "|")
+        prep_split <- split(x = fPrep, f = grp)
+        
+        prep_list <- lapply(prep_split, function(x) {
+                v1 <- x$value[1]
+                v2 <- x$value[2]
+                v3 <- x$value[3]
+                for(r in 1:nrow(x)) {
+                        if(r == 1) {
+                                x[r,5] <- v1
+                        }
+                        if(r == 2) {
+                                x[r,4] <- v1
+                                x[r,5] <- v1 + v2
+                        }
+                        if(r == 3) {
+                                x[r,4] <- v1 + v2
+                                x[r,5] <- v1 + v2 + v3
+                        }
+                }
+                return(x)
+        })
+        
+        res_x <- do.call("rbind", prep_list)
+        row.names(res_x) <- apply(res_x[,c("from","to")], 1, paste, collapse = "|")
+        return(res_x)
+}
+coord_prep <- data.frame(CircosData_link[,c("from", "to", "value")], "x1" = 0, "x2" = 0)
+coord_prep <- prepChord_x(coord_prep)
+coord_prep$y1 <- 0
+coord_prep$y2 <- 0
+
+###############
+# prepChord_y -- returns a data.frame vector with:
+#       - coordinates for y1 and y2
+# ARGUMENTS -- fPrep (data.frame)
+#       - 'fPrep' is a data.frame from prepChord_x function added "y1" and "y2" columns
+###############
+prepChord_y <- function(fPrep) {
+        rnms <- row.names(fPrep)
+        s1 <- sapply(strsplit(x = rnms, split = "\\|"), "[[", 1)
+        s1 <- sapply(strsplit(x = s1, split = "x"), "[[", 1)
+        s2 <- sapply(strsplit(x = rnms, split = "\\|"), "[[", 2)
+        s2 <- sapply(strsplit(x = s2, split = "x"), "[[", 1)
+        grp <- paste(s1,s2, sep = "|")
+        prep_split <- split(x = fPrep, f = grp)
+        
+        prep_list <- lapply(prep_split, function(x) {
+                for(r in 1:nrow(x)) {
+                        if(r %in% c(1:3)) {
+                                x$y2[r] <- x$value[r]
+                        } else {
+                                x$y1[r] <- x$y2[r-3]
+                                x$y2[r] <- x$y2[r-3] + x$value[r]
+                        }
+                }
+                return(x)
+        })
+        
+        res_y <- do.call("rbind", prep_list)
+        row.names(res_y) <- apply(res_y[,c("from","to")], 1, paste, collapse = "|")
+        return(res_y)
+}
+coord_prep <- prepChord_y(coord_prep)
+coord_prep <- data.frame("pair" = row.names(coord_prep), coord_prep, row.names = NULL)
+final_prep <- merge(CircosData_link[,c(1:4,7)], coord_prep, by = "pair")
+row.names(final_prep) <- final_prep$pair
+CircosData_link <- final_prep[CircosData_link$pair,]
+
+### 8.1.2 Nodes
+labelResume_melt <- reshape2::melt(labelResume, id.var = "RID")
+CircosData_q <- as.data.frame(table(labelResume_melt[,c(2,3)]))
+colnames(CircosData_q) <- c("feature1", "feature2", "value")
+CircosData_q <- CircosData_q[order(CircosData_q[,1], decreasing = TRUE),]
+
+```
+
+## 8.2 Prepare chord settings
+``` {r}
+
+### 8.2.1 Prepare data
+cdt_q <- data.frame("diag" = CircosData_q$feature1,
+                    "pair" = apply(CircosData_q[,c(1,2)], 1, paste, collapse = "x"), 
+                    "value" = CircosData_q[,3], 
+                    row.names = apply(CircosData_q[,c(1,2)], 1, paste, collapse = "x"), 
+                    stringsAsFactors = F)
+zero_groups <- which(cdt_q$value == 0)
+zero_groups <- cdt_q$pair[zero_groups]
+link_remove_from <- CircosData_link$from %in% zero_groups
+link_remove_to <- CircosData_link$to %in% zero_groups
+link_remove <- link_remove_from | link_remove_to
+
+cdt_link1 <- CircosData_link[,c("from","to","x1","x2","y1","y2")]
+cdt_link <- cdt_link1[!link_remove,]
+
+### 8.2.2 Color schemes
+link_pal <- c(diverge_hcl(n = 5, palette = "Green-Orange", alpha = 0.5)[5],
+              sequential_hcl(n = 1, palette = "Greens 2", alpha = 0.5)[1])
+names(link_pal) <- c(FALSE, TRUE)
+
+inner_pal <- list(sequential_hcl(n = 4, palette = "Grays", alpha = 0.5)[1:3],
+                  sequential_hcl(n = 4, palette = "Grays", alpha = 0.5)[1:3],
+                  sequential_hcl(n = 4, palette = "Grays", alpha = 0.5)[1:3],
+                  sequential_hcl(n = 4, palette = "Grays", alpha = 0.5)[1:3])
+names(inner_pal) <- unique(CircosData_link$from_x)[order(unique(CircosData_link$from_x))]
+inner_pal <- lapply(inner_pal, function(cols){
+        names(cols) <- c("AD", "not_AD", "not_AD_at_risk")
+        return(cols)
+})
+inner_pal <- lapply(names(inner_pal), function(np, p) {
+        p <- p[[np]]
+        names(p) <- paste(np, names(p), sep = "x")
+        return(p)
+}, p = inner_pal)
+inner_pal <- unlist(inner_pal)
+
+outer_pal <- list(qualitative_hcl(n = 5, palette = "Pastel 1", alpha = 1)[1],
+                  qualitative_hcl(n = 5, palette = "Pastel 1", alpha = 1)[2],
+                  qualitative_hcl(n = 5, palette = "Pastel 1", alpha = 1)[4],
+                  qualitative_hcl(n = 5, palette = "Pastel 1", alpha = 1)[5])
+names(outer_pal) <- unique(CircosData_link$from_x)[order(unique(CircosData_link$from_x))]
+outer_pal <- structure(c(outer_pal[[1]][1], 
+                         outer_pal[[2]][1],
+                         outer_pal[[3]][1],
+                         outer_pal[[4]][1]),
+                       names = unique(CircosData_link$from_x)[order(unique(CircosData_link$from_x))])
+
+### 8.2.3 Circos parameters
+sectors <- unique(cdt_link$from)
+secsplit <- strsplit(x = sectors, split = "x")
+names(secsplit) <- sectors
+secsplit <- sapply(secsplit, function (x) x[[1]])
+names(sectors) <- secsplit[sectors]
+
+xlims <- cbind("start" = rep(0, times = length(cdt_q$value)), "finish" = cdt_q$value)
+row.names(xlims) <- cdt_q$pair
+xlims <- xlims[sectors,]
+
+inner_sector_cols <- inner_pal[sectors]
+outer_sector_cols <- outer_pal[names(sectors)]
+names(outer_sector_cols) <- sectors
+
+links <- cdt_link
+ev1 <- strsplit(x = links$from, split = "x")
+ev1 <- sapply(ev1, function(x) x[[2]])
+ev2 <- strsplit(x = links$to, split = "x")
+ev2 <- sapply(ev2, function(x) x[[2]])
+link_ev <- ev1 == ev2
+links$coleval <- link_ev
+links$col <- link_pal[as.character(link_ev)]
+
+```
+
+## 8.3 Chord plot
+``` {r}
+
+svg("ChordPlot_Nia18.svg")
+system = "Nia18"
+
+#for (system in unique(CircosData_link$from_x)) {
+     gap.degree <- 5
+     circos.par(gap.degree = gap.degree, cell.padding = c(0.02, 0, 0.02, 0))
+     circos.initialize(factors = sectors, xlim = xlims)
+     circos.trackPlotRegion(ylim = c(0, 1), track.height = 0.07, bg.col = inner_sector_cols, bg.border = NA)
+     circos.trackPlotRegion(ylim = c(0, 1), track.height = 0.1, bg.col = inner_sector_cols, bg.border = NA)
+     
+     link_logical <- grepl(pattern = paste("^", system, sep = ""), x = links$from)
+     link_cols <- links[link_logical,]
+     
+     for(i in 1:nrow(link_cols)) {
+          link <- link_cols[i, ]
+          circos.link(sector.index1 = link[[1]], 
+                      point1 = c(link[[3]], link[[4]]), 
+                      sector.index2 = link[[2]], 
+                      point2 = c(link[[5]], link[[6]]), 
+                      col = link[["col"]], border = "white",
+                      h.ratio = 0.4  # wideness of the links, original is 0.5
+          )
+     }
+     
+     x <- get.all.sector.index()
+     xsplt <- strsplit(x = x, split = "x")
+     names(xsplt) <- x
+     xsplt <- sapply(xsplt, "[[", 1)
+     names(x) <- xsplt[x]
+     
+     for(b in unique(xsplt)) {
+          highlight.sector(sector.index = x[names(x) %in% b], 
+                           track.index = 1, 
+                           col = outer_sector_cols[x[names(x) %in% b]], 
+                           text = "", 
+                           cex = 0.8,
+                           text.vjust = -6, 
+                           niceFacing = TRUE)
+          rm(b)
+     }
+     
+     x <- get.all.sector.index()
+     circos.clear()
+     
+     xsplt <- strsplit(x = x, split = "x")
+     names(xsplt) <- x
+     xsplt <- sapply(xsplt, "[[", 2)
+     names(x) <- xsplt[x]
+     lgd <- Legend(at = unique(names(x)), type = "points", 
+                   legend_gp = gpar(col = unique(inner_sector_cols)), title_position = "topleft", 
+                   title = paste("System:", system))
+     draw(lgd, x = unit(10, "mm"), y = unit(10, "mm"), just = c("left", "bottom"))
+     
+     y <- names(outer_sector_cols)
+     ysplt <- strsplit(x = y, split = "x")
+     names(ysplt) <- y
+     ysplt <- sapply(ysplt, "[[", 1)
+     names(y) <- ysplt[y]
+     lgd <- Legend(at = unique(names(y)), type = "points", 
+                   legend_gp = gpar(col = unique(outer_sector_cols)), title_position = "topleft", 
+                   title = paste("System Colors"))
+     draw(lgd, x = unit(10, "mm"), y = unit(90, "mm"), just = c("left", "bottom"))
+#}
+
+dev.off()
+
+```
+
+``` {r}
+
+
+```
+
+#############################################
+# 10. OTHER FIGURES
+#############################################
+
+## 10.1.1 Biomarkers panel with barplots - by diagnostic label
+``` {r}
+
+mrg$labelDisc <- ifelse(mrg$Nia11FinalLabel==mrg$Iwg16FinalLabel&mrg$Iwg16FinalLabel==mrg$Nia18FinalLabel&mrg$Nia18FinalLabel==mrg$Iwg21FinalLabel,"Concordant","Discordant")
+
+# Data frame
+bmrkrPanel <- select(mrg,c("ABETA","PTAU","Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel")) %>%
+  tidyr::pivot_longer(cols=c("Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel"),
+                      names_to="criteria",
+                      values_to="finalLabel") %>%
+  dplyr::mutate(finalLabel=factor(
+    finalLabel,
+    levels = c("not_AD","not_AD_at_risk","AD"),
+    labels = c("Not AD","Not AD - at risk","AD")
+  )
+)
+
+# ABETA
+bmrkrPanelAbetaPlot <- ggplot(bmrkrPanel, aes(fill=finalLabel,x=criteria)) +
+  stat_summary(aes(y=ABETA),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(y=ABETA),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - ABETA") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelAbetaPlot
+
+# PTAU
+bmrkrPanelPtauPlot <- ggplot(bmrkrPanel, aes(fill=finalLabel,x=criteria,y=PTAU)) +
+  stat_summary(aes(),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - PTAU") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelPtauPlot
+
+```
+
+## 10.1.2 Biomarkers panel with barplots - by cognitive labels
+```{r}
+
+# Data frame
+bmrkrPanel <- select(mrg,c("ABETA","PTAU","Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel","Nia11CogLabel")) %>%
+  tidyr::pivot_longer(cols=c("Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel"),
+                      names_to="criteria",
+                      values_to="finalLabel") %>%
+  dplyr::mutate(finalLabel=factor(
+    finalLabel,
+    levels = c("not_AD","not_AD_at_risk","AD"),
+    labels = c("Not AD","Not AD - at risk","AD")
+  )
+)
+
+
+bmrkrPanelCI <- bmrkrPanel %>% filter(Nia11CogLabel == "ci")
+
+# ABETA
+bmrkrPanelAbetaCIPlot <- ggplot(bmrkrPanelCI, aes(fill=finalLabel,x=criteria)) +
+  stat_summary(aes(y=ABETA),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(y=ABETA),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - ABETA") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelAbetaCIPlot
+
+# PTAU
+bmrkrPanelPtauCIPlot <- ggplot(bmrkrPanelCI, aes(fill=finalLabel,x=criteria,y=PTAU)) +
+  stat_summary(aes(),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - PTAU") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelPtauCIPlot
+
+bmrkrPanelCU <- bmrkrPanel %>% filter(Nia11CogLabel == "cu")
+
+# ABETA
+bmrkrPanelAbetaCUPlot <- ggplot(bmrkrPanelCU, aes(fill=finalLabel,x=criteria)) +
+  stat_summary(aes(y=ABETA),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(y=ABETA),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - ABETA") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelAbetaCUPlot
+
+# PTAU
+bmrkrPanelPtauCUPlot <- ggplot(bmrkrPanelCU, aes(fill=finalLabel,x=criteria,y=PTAU)) +
+  stat_summary(aes(),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - PTAU") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelPtauCUPlot
+
+```
+
+## 10.1.3 Biomarkers panel with barplots - by discordants
+```{r}
+
+# Data frame
+bmrkrPanel <- select(mrg,c("ABETA","PTAU","Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel","labelDisc")) %>%
+  tidyr::pivot_longer(cols=c("Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel"),
+                      names_to="criteria",
+                      values_to="finalLabel") %>%
+  dplyr::mutate(finalLabel=factor(
+    finalLabel,
+    levels = c("not_AD","not_AD_at_risk","AD"),
+    labels = c("Not AD","Not AD - at risk","AD")
+  )
+)
+
+bmrkrPanelDisc <- bmrkrPanel %>% filter(labelDisc == "Discordant")
+
+# ABETA
+bmrkrPanelAbetaDiscPlot <- ggplot(bmrkrPanelDisc, aes(fill=finalLabel,x=criteria)) +
+  stat_summary(aes(y=ABETA),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(y=ABETA),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - ABETA") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelAbetaDiscPlot
+
+# PTAU
+bmrkrPanelPtauDiscPlot <- ggplot(bmrkrPanelDisc, aes(fill=finalLabel,x=criteria,y=PTAU)) +
+  stat_summary(aes(),
+               fun=mean,na.rm=T,
+               geom="bar",
+               size=3,
+               alpha=0.6,
+               position="dodge") +
+  stat_summary(aes(),
+               fun.data=mean_cl_normal,na.rm=T,
+               geom="errorbar",
+               width=0.5,
+               size=0.6,
+               position=position_dodge(width=0.9)) +
+  coord_flip() +
+  scale_x_discrete(limits = c("Iwg21FinalLabel","Nia18FinalLabel","Iwg16FinalLabel","Nia11FinalLabel")) +
+  ggtitle("Biomarkers panel - PTAU") +
+  theme_classic() + scale_fill_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelPtauDiscPlot
+
+
+```
+
+## 10.2 Biomarkers panel for discordants
+```{r}
+
+# Data frame
+bmrkrPanelDisc <- select(mrg,c("ABETA","PTAU","Nia11CogLabel","Iwg16CogLabel","Nia18CogLabel","Iwg21CogLabel","Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel"))
+bmrkrPanelDisc$labelDisc <- ifelse(bmrkrPanelDisc$Nia11FinalLabel==bmrkrPanelDisc$Iwg16FinalLabel&bmrkrPanelDisc$Iwg16FinalLabel==bmrkrPanelDisc$Nia18FinalLabel&bmrkrPanelDisc$Nia18FinalLabel==bmrkrPanelDisc$Iwg21FinalLabel,"Concordant","Discordant")
+bmrkrPanelDisc  %>%  dplyr::mutate(labelDisc=factor(
+  labelDisc,
+  levels = c("Concordant","Discordant"),
+  labels = c("Concordant","Discordant"))
+  )
+
+# Scatter plot
+bmrkrPanelScatterPlot <- ggplot(bmrkrPanelDisc, aes(x=ABETA,y=PTAU,color=labelDisc)) +
+  geom_point(alpha=0.8,stroke=0) +
+  geom_vline(xintercept = abetaThresh) +
+  geom_hline(yintercept = ptauThresh) +
+  theme_classic() +
+  theme(legend.position = "None") +
+  scale_color_manual(values=c("#033270","#f95738"))
+bmrkrPanelScatterPlot
+
+```
+
+## 10.3 Biomarkers panel for labels in each criteria
+```{r}
+
+# Data frame
+bmrkrPanelLabels <- select(mrg,c("ABETA","PTAU","Nia11FinalLabel","Iwg16FinalLabel","Nia18FinalLabel","Iwg21FinalLabel"))
+bmrkrPanelLabels  %>%  
+  dplyr::mutate(Nia11FinalLabel=factor(Nia11FinalLabel,levels = c("not_AD","not_AD_at_risk","AD"),labels = c("Not AD","Not AD - at risk","AD"))) %>%  
+  dplyr::mutate(Iwg16FinalLabel=factor(Iwg16FinalLabel,levels = c("not_AD","not_AD_at_risk","AD"),labels = c("Not AD","Not AD - at risk","AD"))) %>%  
+  dplyr::mutate(Nia18FinalLabel=factor(Nia18FinalLabel,levels = c("not_AD","not_AD_at_risk","AD"),labels = c("Not AD","Not AD - at risk","AD"))) %>%  
+  dplyr::mutate(Iwg21FinalLabel=factor(Iwg21FinalLabel,levels = c("not_AD","not_AD_at_risk","AD"),labels = c("Not AD","Not AD - at risk","AD")))
+
+# Scatter plot
+bmrkrPanelLabelsPlotNia11 <- ggplot(bmrkrPanelLabels, aes(x=ABETA,y=PTAU,color=Nia11FinalLabel)) +
+  geom_point(alpha=0.6,stroke=0) + geom_vline(xintercept = abetaThresh) + geom_hline(yintercept = ptauThresh) + theme_classic() + scale_color_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelLabelsPlotIwg16 <- ggplot(bmrkrPanelLabels, aes(x=ABETA,y=PTAU,color=Iwg16FinalLabel)) +
+  geom_point(alpha=0.6,stroke=0) + geom_vline(xintercept = abetaThresh) + geom_hline(yintercept = ptauThresh) + theme_classic() + scale_color_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelLabelsPlotNia18 <- ggplot(bmrkrPanelLabels, aes(x=ABETA,y=PTAU,color=Nia18FinalLabel)) +
+  geom_point(alpha=0.6,stroke=0) + geom_vline(xintercept = abetaThresh) + geom_hline(yintercept = ptauThresh) + theme_classic() + scale_color_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+bmrkrPanelLabelsPlotIwg21 <- ggplot(bmrkrPanelLabels, aes(x=ABETA,y=PTAU,color=Iwg21FinalLabel)) +
+  geom_point(alpha=0.6,stroke=0) + geom_vline(xintercept = abetaThresh) + geom_hline(yintercept = ptauThresh) + theme_classic() + scale_color_manual(values=c("#5a189a","#52b69a","#3a86ff"))
+grid.arrange(bmrkrPanelLabelsPlotNia11,bmrkrPanelLabelsPlotIwg16,bmrkrPanelLabelsPlotNia18,bmrkrPanelLabelsPlotIwg21,ncol=2)
+
+```
